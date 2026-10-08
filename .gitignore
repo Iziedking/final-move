@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+*.pem
+*-recovery-file.json
+recovery_file*
+*.key
+node_modules/
+.next/
+dist/
+out/
+coverage/
+packages/contracts/cache/
+packages/contracts/out/
+packages/contracts/broadcast/*/dry-run/
+.turbo/
+.DS_Store
