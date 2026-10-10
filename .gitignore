@@ -15,3 +15,5 @@ packages/contracts/out/
 packages/contracts/broadcast/*/dry-run/
 .turbo/
 .DS_Store
+.arc-studio/
+*.tsbuildinfo

@@ -23,6 +23,7 @@ before writing code that depends on it.
 | Privacy (APS) | Roadmap only, not available | docs.arc.io opt-in privacy |
 | Circle developer-controlled wallets | Chain codes `ARC` and `ARC-TESTNET`, EOA and SCA | developers.circle.com supported blockchains |
 | Circle Gas Station on Arc | Not confirmed | No source found. Do not depend on it. |
+| **Stage 0 test tx** | hash `0xed553b0dc48fd49a07990bfaab723fb30c80b860c6fd3d6d418ad41d66ceda4c` · Circle id `b5e09b4f-ecd9-5ec7-930e-6d6ad9aceb9c` · request→COMPLETE **2220 ms** · gas used: see explorer | `approve(address,uint256)` from player_white wallet on ARC-TESTNET, 2026-10-08. Circle `feeLevel=HIGH`. Transaction went `INITIATED→COMPLETE` in a single 2 s poll tick — no intermediate `SENT` state observed, consistent with sub-second Arc finality. Explorer: https://explorer.testnet.arc.io/tx/0xed553b0dc48fd49a07990bfaab723fb30c80b860c6fd3d6d418ad41d66ceda4c |
 
 ## Rules that follow from these facts
 

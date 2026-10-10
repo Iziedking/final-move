@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Import Zerun design tokens */
+@import "../../../../packages/ui/styles/tokens.css";
+
+@layer base {
+  html {
+    background-color: rgb(var(--sky));
+    color: rgb(var(--ink));
+  }
+
+  /* Baloo 2 for display, Nunito for body, JetBrains Mono for hashes */
+  body {
+    font-family: var(--font-body, "Nunito", system-ui, sans-serif);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Scrollbar — thin, themed */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgb(var(--ink-3)); border-radius: 999px; }

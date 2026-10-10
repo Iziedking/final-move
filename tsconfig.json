@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "references": [
+    { "path": "./packages/chess" },
+    { "path": "./packages/ui" },
+    { "path": "./packages/shared" },
+    { "path": "./apps/server" }
+  ],
+  "files": []
+}

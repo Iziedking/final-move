@@ -1,0 +1,533 @@
+{
+  "contractAddress": "0x42a20a9a8a05697585f32b98694311d7ed267155",
+  "network": "ARC-TESTNET",
+  "deployerWalletId": "3c2464b2-8369-52e2-a782-800bbeca5396",
+  "contract_code_path": "/home/user/app/contracts/FinalMoveLedger.sol",
+  "contract_compiled_code_path": "/home/user/app/contracts/out/FinalMoveLedger.sol/FinalMoveLedger.json",
+  "contract_network_and_links": {
+    "Arc Testnet": "https://explorer.testnet.arc.io/address/0x42a20a9a8a05697585f32b98694311d7ed267155"
+  },
+  "contract_deployments": [
+    {
+      "chain": "Arc Testnet",
+      "address": "0x42a20a9a8a05697585f32b98694311d7ed267155",
+      "explorerUrl": "https://explorer.testnet.arc.io/address/0x42a20a9a8a05697585f32b98694311d7ed267155",
+      "txHash": "0x3710398adc76af16174aabb8ac169bfe0c6f5c051ca2ddf2e02165840e02dde9",
+      "deployedAt": "2026-10-08T14:31:17.935Z"
+    }
+  ],
+  "abi": [
+    {
+      "type": "constructor",
+      "inputs": [
+        {
+          "name": "_owner",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "_referee",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "acceptDraw",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "createGame",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "white",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "black",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "gameClass",
+          "type": "uint8",
+          "internalType": "uint8"
+        },
+        {
+          "name": "baseSec",
+          "type": "uint32",
+          "internalType": "uint32"
+        },
+        {
+          "name": "incSec",
+          "type": "uint16",
+          "internalType": "uint16"
+        },
+        {
+          "name": "escrowMatchId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "endGame",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "result",
+          "type": "uint8",
+          "internalType": "enum FinalMoveLedger.Result"
+        },
+        {
+          "name": "reason",
+          "type": "uint8",
+          "internalType": "uint8"
+        },
+        {
+          "name": "totalPlies",
+          "type": "uint16",
+          "internalType": "uint16"
+        },
+        {
+          "name": "finalFenHash",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "move",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "ply",
+          "type": "uint16",
+          "internalType": "uint16"
+        },
+        {
+          "name": "uci",
+          "type": "uint16",
+          "internalType": "uint16"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "offerDraw",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "owner",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "paused",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "pliesRecorded",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "referee",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "relayMove",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "ply",
+          "type": "uint16",
+          "internalType": "uint16"
+        },
+        {
+          "name": "uci",
+          "type": "uint16",
+          "internalType": "uint16"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "resign",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "resultOf",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "status",
+          "type": "uint8",
+          "internalType": "enum FinalMoveLedger.Status"
+        },
+        {
+          "name": "result",
+          "type": "uint8",
+          "internalType": "enum FinalMoveLedger.Result"
+        },
+        {
+          "name": "white",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "black",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "escrowMatchId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "setPaused",
+      "inputs": [
+        {
+          "name": "_paused",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "setReferee",
+      "inputs": [
+        {
+          "name": "_referee",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "event",
+      "name": "DrawAccepted",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "player",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "DrawOffered",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "player",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "GameCreated",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "white",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "black",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "gameClass",
+          "type": "uint8",
+          "indexed": false,
+          "internalType": "uint8"
+        },
+        {
+          "name": "baseSec",
+          "type": "uint32",
+          "indexed": false,
+          "internalType": "uint32"
+        },
+        {
+          "name": "incSec",
+          "type": "uint16",
+          "indexed": false,
+          "internalType": "uint16"
+        },
+        {
+          "name": "escrowMatchId",
+          "type": "bytes32",
+          "indexed": false,
+          "internalType": "bytes32"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "GameEnded",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "result",
+          "type": "uint8",
+          "indexed": false,
+          "internalType": "enum FinalMoveLedger.Result"
+        },
+        {
+          "name": "reason",
+          "type": "uint8",
+          "indexed": false,
+          "internalType": "uint8"
+        },
+        {
+          "name": "totalPlies",
+          "type": "uint16",
+          "indexed": false,
+          "internalType": "uint16"
+        },
+        {
+          "name": "finalFenHash",
+          "type": "bytes32",
+          "indexed": false,
+          "internalType": "bytes32"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "Move",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "ply",
+          "type": "uint16",
+          "indexed": true,
+          "internalType": "uint16"
+        },
+        {
+          "name": "uci",
+          "type": "uint16",
+          "indexed": false,
+          "internalType": "uint16"
+        },
+        {
+          "name": "player",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        },
+        {
+          "name": "relayed",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "Paused",
+      "inputs": [
+        {
+          "name": "paused",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "RefereeChanged",
+      "inputs": [
+        {
+          "name": "oldReferee",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "newReferee",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "Resigned",
+      "inputs": [
+        {
+          "name": "gameId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "player",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    }
+  ]
+}

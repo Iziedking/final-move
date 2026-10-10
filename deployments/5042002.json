@@ -1,0 +1,54 @@
+{
+  "chainId": 5042002,
+  "chainName": "Arc Testnet",
+  "network": "testnet",
+  "deployedAt": "2026-10-08T14:31:45Z",
+  "stakesEnabled": true,
+  "contracts": {
+    "FinalMoveLedger": {
+      "address": "0x42a20a9a8a05697585f32b98694311d7ed267155",
+      "txHash": "0x3710398adc76af16174aabb8ac169bfe0c6f5c051ca2ddf2e02165840e02dde9",
+      "deployBlock": 66150309,
+      "explorer": "https://explorer.testnet.arc.io/address/0x42a20a9a8a05697585f32b98694311d7ed267155",
+      "constructorArgs": {
+        "owner": "0x5B12Ce46C7194aD57d143bC22847224047b1Ef42",
+        "referee": "0xd3aea1363d3c42797fec28d2e24fa71e226603bb"
+      }
+    },
+    "MatchEscrow": {
+      "address": "0x8259d3825f4b0603f84d9fb0daeea1c9a8d8ee0a",
+      "txHash": "0x612f256bb9ed3b43e1efd8dff4ed995e689c92393d955181170550a8edc084d4",
+      "deployBlock": 66150353,
+      "explorer": "https://explorer.testnet.arc.io/address/0x8259d3825f4b0603f84d9fb0daeea1c9a8d8ee0a",
+      "constructorArgs": {
+        "usdc": "0x3600000000000000000000000000000000000000",
+        "ledger": "0x42a20a9a8a05697585f32b98694311d7ed267155",
+        "stakesEnabled": true,
+        "owner": "0x5B12Ce46C7194aD57d143bC22847224047b1Ef42",
+        "referee": "0xd3aea1363d3c42797fec28d2e24fa71e226603bb"
+      }
+    },
+    "TournamentPool": {
+      "address": "0x3c1e0b3bf09c63b66d2526f01d21e461797c379b",
+      "txHash": "0xb3f0789e2c466dc9b724ba7a01aaf5e8cff7f54df16d8f1f1383b68e786cc414",
+      "deployBlock": 66150363,
+      "explorer": "https://explorer.testnet.arc.io/address/0x3c1e0b3bf09c63b66d2526f01d21e461797c379b",
+      "constructorArgs": {
+        "usdc": "0x3600000000000000000000000000000000000000",
+        "stakesEnabled": true,
+        "owner": "0x5B12Ce46C7194aD57d143bC22847224047b1Ef42",
+        "referee": "0xd3aea1363d3c42797fec28d2e24fa71e226603bb"
+      }
+    }
+  },
+  "wallets": {
+    "referee": {
+      "walletId": "13ecac2f-f595-5409-a2f0-56866d52ac08",
+      "address": "0xd3aea1363d3c42797fec28d2e24fa71e226603bb"
+    },
+    "treasury": {
+      "walletId": "831e7350-1ca0-5593-8a89-12406042c352",
+      "address": "0x8ebb749879a52b961b037ce85cf79428211894dd"
+    }
+  }
+}
