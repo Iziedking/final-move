@@ -1,4 +1,6 @@
 "use client";
+import { API_BASE } from "@/lib/api";
+import Link from "next/link";
 import type React from "react";
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
@@ -18,7 +20,7 @@ export function ChallengeAcceptClient({ code }: { code: string }): React.JSX.Ele
   const [accepting, setAccepting] = useState(false);
   const [error, setError]         = useState<string | null>(null);
 
-  const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL ?? "http://localhost:3001";
+  const serverUrl = API_BASE;
 
   useEffect(() => {
     fetch(`${serverUrl}/v1/challenges/${code}`)
@@ -60,22 +62,22 @@ export function ChallengeAcceptClient({ code }: { code: string }): React.JSX.Ele
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-sky">
-        <div className="font-display text-lg text-ink-3 animate-pulse">Loading challenge…</div>
+      <div className="flex min-h-screen items-center justify-center bg-fm-canvas">
+        <div className="font-display text-lg text-fm-ink3 animate-pulse">Loading challenge…</div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-sky px-4">
-      <div className="w-full max-w-sm rounded-chunk border-[3px] border-ink bg-cloud shadow-pop-lg p-6 flex flex-col gap-4">
-        <div className="font-display text-2xl font-bold text-ink text-center">Challenge!</div>
+    <div className="flex min-h-screen items-center justify-center bg-fm-canvas px-4">
+      <div className="w-full max-w-sm rounded-xl border border-fm-ink/20 bg-fm-surface  p-6 flex flex-col gap-4">
+        <div className="font-display text-2xl font-bold text-fm-ink text-center">Challenge!</div>
 
         {error ? (
-          <p className="text-center font-body text-sm text-coral">{error}</p>
+          <p className="text-center text-sm text-sm text-fm-danger">{error}</p>
         ) : challenge ? (
           <>
-            <p className="font-body text-sm text-ink-2 text-center">
+            <p className="text-sm text-sm text-fm-ink2 text-center">
               You&apos;ve been challenged to a{" "}
               <strong>{challenge.timeControl}</strong>{" "}
               <strong className="capitalize">{challenge.gameClass}</strong> game.
@@ -84,17 +86,17 @@ export function ChallengeAcceptClient({ code }: { code: string }): React.JSX.Ele
             <button
               onClick={handleAccept}
               disabled={accepting}
-              className="w-full rounded-chunk border-[3px] border-ink bg-violet py-3 font-display text-lg font-bold text-cloud shadow-pop hover:shadow-pop-press active:shadow-pop-press transition-all disabled:opacity-60"
+              className="w-full rounded-xl border border-fm-ink/20 bg-fm-green py-3 font-display text-lg font-bold text-white  hover: active: transition-all disabled:opacity-60"
             >
               {accepting ? "Accepting…" : "Accept challenge"}
             </button>
 
             <a
               href="/"
-              className="text-center font-body text-sm text-ink-3 hover:text-ink transition-colors"
+              className="text-center text-sm text-sm text-fm-ink3 hover:text-fm-ink transition-colors"
             >
               Decline
-            </a>
+            </Link>
           </>
         ) : null}
       </div>

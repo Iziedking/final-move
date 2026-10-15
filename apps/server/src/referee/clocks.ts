@@ -97,10 +97,28 @@ export async function deleteClocks(gameId: string): Promise<void> {
   );
 }
 
-/** Alias used by the HTTP/WS server layer. */
-export async function getClocks(gameId: string): Promise<{ wMs: number; bMs: number }> {
+/** Alias used by the HTTP/WS server layer — returns base time when clock not yet started. */
+export async function getClocks(
+  gameId: string,
+  baseSec?: number,
+): Promise<{ wMs: number; bMs: number }> {
+  const [wRaw, bRaw, since] = await redis.mget(
+    key(gameId, "w"),
+    key(gameId, "b"),
+    key(gameId, "since"),
+  );
+
+  // Stored base times but clock not yet started (game is in "waiting")
+  if (wRaw && bRaw && !since) {
+    return { wMs: Number(wRaw), bMs: Number(bRaw) };
+  }
+
   const state = await getClock(gameId);
-  if (!state) return { wMs: 0, bMs: 0 };
+  if (!state) {
+    // No Redis data at all — return base time if provided, else 0
+    const base = baseSec !== undefined ? baseSec * 1000 : 0;
+    return { wMs: base, bMs: base };
+  }
   // If clock is running, deduct elapsed from the current player
   const now = Date.now();
   const elapsed = Math.max(0, now - state.sinceMs);

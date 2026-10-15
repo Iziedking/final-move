@@ -143,18 +143,21 @@ async function processMoveJob(
 
   await sql`UPDATE moves SET circle_tx_id=${tx.id}, state='sent', sent_at=now() WHERE id=${data.moveRowId}`;
 
-  // Poll for completion (webhook may beat us, that's fine — idempotent update)
+  // Poll for completion (webhook may beat us — idempotent update).
   const final = await pollTx(tx.id, 60_000);
   if (final.state === "COMPLETE") {
+    // Always write tx_hash and complete_at (the indexer doesn't set these).
+    // Guard only the state transition: never downgrade "final" → "complete".
     await sql`
       UPDATE moves
-      SET state='complete', tx_hash=${final.txHash ?? null}, complete_at=now()
-      WHERE id=${data.moveRowId}
+      SET tx_hash    = COALESCE(tx_hash, ${final.txHash ?? null}),
+          complete_at = COALESCE(complete_at, now()),
+          state       = CASE WHEN state = 'final' THEN 'final' ELSE 'complete' END
+      WHERE id = ${data.moveRowId}
     `;
-    // Broadcast to game room (indexer will mark final)
     broadcastChainUpdate(data.gameId, data.ply, final.txHash ?? "", "complete");
   } else {
-    await sql`UPDATE moves SET state='failed' WHERE id=${data.moveRowId}`;
+    await sql`UPDATE moves SET state='failed' WHERE id=${data.moveRowId} AND state <> 'final'`;
     // Re-throw so BullMQ retries; on 3rd failure the relay path kicks in
     throw new Error(`tx ${tx.id} ended ${final.state}`);
   }
@@ -176,8 +179,11 @@ async function processRelayJob(data: Extract<ChainJob, { kind: "relay" }>) {
 
   if (final.state === "COMPLETE") {
     await sql`
-      UPDATE moves SET state='complete', tx_hash=${final.txHash ?? null}, complete_at=now()
-      WHERE id=${data.moveRowId}
+      UPDATE moves
+      SET tx_hash    = COALESCE(tx_hash, ${final.txHash ?? null}),
+          complete_at = COALESCE(complete_at, now()),
+          state       = CASE WHEN state = 'final' THEN 'final' ELSE 'complete' END
+      WHERE id = ${data.moveRowId}
     `;
   } else {
     throw new Error(`relay tx ${tx.id} ended ${final.state}`);
@@ -204,7 +210,14 @@ async function processEndGameJob(data: Extract<ChainJob, { kind: "endGame" }>) {
   const final = await pollTx(tx.id, 120_000);
   if (final.state !== "COMPLETE") throw new Error(`endGame tx ${tx.id} ended ${final.state}`);
 
-  await sql`UPDATE games SET status='ended' WHERE chain_game_id=${data.gameId}`;
+  // Preserve the status already written by endGame/abortGame — only set 'ended'
+  // for genuine wins/draws; aborted games stay 'aborted'.
+  await sql`
+    UPDATE games
+    SET status = CASE WHEN status = 'aborted' THEN 'aborted' ELSE 'ended' END
+    WHERE chain_game_id = ${data.gameId}
+      AND status NOT IN ('ended', 'aborted')
+  `;
   console.log(`[writer] endGame ok game=${data.gameId} tx=${final.txHash}`);
 }
 
@@ -258,16 +271,18 @@ export async function applyTxState(tx: CircleTx) {
   const row = rows[0]!;
 
   if (tx.state === "SENT") {
-    await sql`UPDATE moves SET state='sent', sent_at=now() WHERE id=${row.id}`;
+    await sql`UPDATE moves SET state='sent', sent_at=now() WHERE id=${row.id} AND state <> 'final'`;
   } else if (tx.state === "COMPLETE") {
     await sql`
       UPDATE moves
-      SET state='complete', tx_hash=${tx.txHash ?? null}, complete_at=now()
-      WHERE id=${row.id}
+      SET tx_hash    = COALESCE(tx_hash, ${tx.txHash ?? null}),
+          complete_at = COALESCE(complete_at, now()),
+          state       = CASE WHEN state = 'final' THEN 'final' ELSE 'complete' END
+      WHERE id = ${row.id}
     `;
     broadcastChainUpdate(row.game_id, row.ply, tx.txHash ?? "", "complete");
   } else if (["FAILED", "DENIED", "CANCELLED"].includes(tx.state)) {
-    await sql`UPDATE moves SET state='failed' WHERE id=${row.id}`;
+    await sql`UPDATE moves SET state='failed' WHERE id=${row.id} AND state <> 'final'`;
   }
 }
 

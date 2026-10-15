@@ -1,4 +1,7 @@
 services:
+  # API server — add restart: unless-stopped here when containerising.
+  # The bun process in scripts/start-local.sh runs outside compose; it is
+  # restarted by the start script loop (see scripts/start-local.sh).
   postgres:
     image: postgres:18-alpine
     restart: unless-stopped
@@ -6,7 +9,7 @@ services:
       POSTGRES_PASSWORD: finalmove
       POSTGRES_USER: finalmove
       POSTGRES_DB: finalmove
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes: ["pgdata:/var/lib/postgresql"]
     mem_limit: 512m
     healthcheck:
@@ -18,7 +21,7 @@ services:
   redis:
     image: redis:8-alpine
     restart: unless-stopped
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
     mem_limit: 128m
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping | grep PONG"]

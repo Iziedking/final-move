@@ -11,6 +11,26 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        /* Final Move palette */
+        fm: {
+          canvas:  "rgb(var(--fm-canvas) / <alpha-value>)",
+          canvas2: "rgb(var(--fm-canvas-2) / <alpha-value>)",
+          surface: "rgb(var(--fm-surface) / <alpha-value>)",
+          surface2:"rgb(var(--fm-surface-2) / <alpha-value>)",
+          ink:     "rgb(var(--fm-ink) / <alpha-value>)",
+          ink2:    "rgb(var(--fm-ink-2) / <alpha-value>)",
+          ink3:    "rgb(var(--fm-ink-3) / <alpha-value>)",
+          green:   "rgb(var(--fm-green) / <alpha-value>)",
+          "green-mid": "rgb(var(--fm-green-mid) / <alpha-value>)",
+          "green-light": "rgb(var(--fm-green-light) / <alpha-value>)",
+          gold:    "rgb(var(--fm-gold) / <alpha-value>)",
+          "gold-light": "rgb(var(--fm-gold-light) / <alpha-value>)",
+          "sq-light": "rgb(var(--fm-sq-light) / <alpha-value>)",
+          "sq-dark":  "rgb(var(--fm-sq-dark) / <alpha-value>)",
+          success: "rgb(var(--fm-success) / <alpha-value>)",
+          danger:  "rgb(var(--fm-danger) / <alpha-value>)",
+          draw:    "rgb(var(--fm-draw) / <alpha-value>)",
+        },
         sky: { DEFAULT: "rgb(var(--sky) / <alpha-value>)", 2: "rgb(var(--sky-2) / <alpha-value>)" },
         cloud: { DEFAULT: "rgb(var(--cloud) / <alpha-value>)", 2: "rgb(var(--cloud-2) / <alpha-value>)" },
         ink: {

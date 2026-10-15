@@ -2,23 +2,289 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Import Zerun design tokens */
-@import "../../../../packages/ui/styles/tokens.css";
+/* ─── Final Move — Teal sticker-card design system ──────────────────────────
+   Tokens follow the Zerun cosmic-candy pattern: RGB triplets, .dark override,
+   accent stays vivid in both themes.  Primary colour: teal #0D9488.
+   ─────────────────────────────────────────────────────────────────────────── */
 
+:root {
+  /* Sky — pale aqua-tinted background */
+  --sky:     224 242 241;   /* #E0F2F1 very light teal tint */
+  --sky-2:   178 223 219;   /* #B2DFDB slightly deeper */
+
+  /* Surfaces — bright sticker cards */
+  --cloud:   255 255 255;
+  --cloud-2: 243 250 249;
+
+  /* Ink — deep teal-indigo */
+  --ink:     13  37  36;    /* near-black with teal hue */
+  --ink-2:   55  90  88;
+  --ink-3:   110 145 142;
+
+  /* Primary: teal */
+  --teal:        13  148 136;   /* #0D9488 */
+  --teal-deep:   10  116 106;   /* #0A746A hover */
+  --teal-light:  204 237 234;   /* #CCEDEA tint bg */
+
+  /* Candy accents */
+  --amber:   255 177 60;
+  --mint:    31  214 166;
+  --coral:   255 107 92;
+  --sky-blue: 56 189 248;
+
+  /* Fixed dark ink for text on a candy fill */
+  --candy-ink: 13 37 36;
+  /* Hard offset pop-shadow */
+  --pop-shadow: 13 37 36;
+  /* Modal scrim */
+  --scrim: 5 18 17;
+
+  /* Board squares — classic wood tones (unchanged) */
+  --sq-light: 235 219 183;
+  --sq-dark:  175 136 94;
+
+  /* Semantic */
+  --success: 16  185 129;
+  --danger:  239 68  68;
+  --draw:    99  102 241;
+
+  /* Chain rail */
+  --chain-queued:    178 223 219;
+  --chain-submitted: 255 177 60;
+  --chain-final:     13  148 136;
+  --chain-failed:    239 68  68;
+
+  /* Outline + radius (Zerun-style) */
+  --line:   2.5px;
+  --r:      16px;
+  --r-lg:   24px;
+  --r-pill: 999px;
+
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ── Dark: cosmic deep-teal night ───────────────────────────────────────── */
+.dark {
+  --sky:   7  26  26;
+  --sky-2: 11  38  37;
+
+  --cloud:   22  54  52;
+  --cloud-2: 28  66  63;
+
+  --ink:   224 245 243;
+  --ink-2: 152 210 205;
+  --ink-3: 95  155 150;
+
+  --teal:       45  212 191;   /* brighter teal in dark */
+  --teal-deep:  20  184 166;
+  --teal-light: 19  78  74;
+
+  --amber:    255 196 88;
+  --mint:     54  224 181;
+  --coral:    255 132 117;
+  --sky-blue: 125 211 252;
+
+  --candy-ink: 13 37 36;
+  --pop-shadow: 4  14  14;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
 @layer base {
   html {
     background-color: rgb(var(--sky));
     color: rgb(var(--ink));
   }
-
-  /* Baloo 2 for display, Nunito for body, JetBrains Mono for hashes */
   body {
-    font-family: var(--font-body, "Nunito", system-ui, sans-serif);
+    font-family: 'Nunito', sans-serif;
     -webkit-font-smoothing: antialiased;
+    background-color: rgb(var(--sky));
+    line-height: 1.55;
+  }
+  /* Display / heading font */
+  .font-display {
+    font-family: 'Baloo 2', sans-serif;
+    letter-spacing: -0.01em;
+  }
+  .mono {
+    font-family: 'JetBrains Mono', Menlo, monospace;
   }
 }
 
-/* Scrollbar — thin, themed */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+/* ── StickerCard — outlined card with ink offset shadow ─────────────────── */
+.sticker-card {
+  background: rgb(var(--cloud));
+  border: var(--line) solid rgb(var(--ink));
+  border-radius: var(--r);
+  box-shadow: 4px 4px 0 rgb(var(--pop-shadow));
+}
+.sticker-card-sm {
+  background: rgb(var(--cloud));
+  border: var(--line) solid rgb(var(--ink));
+  border-radius: calc(var(--r) * 0.75);
+  box-shadow: 3px 3px 0 rgb(var(--pop-shadow));
+}
+.sticker-card-lg {
+  background: rgb(var(--cloud));
+  border: var(--line) solid rgb(var(--ink));
+  border-radius: var(--r-lg);
+  box-shadow: 5px 5px 0 rgb(var(--pop-shadow));
+}
+
+/* ── PopButton — solid teal pill button ─────────────────────────────────── */
+.pop-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Baloo 2', sans-serif;
+  font-weight: 700;
+  background: rgb(var(--teal));
+  color: #fff;
+  border: var(--line) solid rgb(var(--ink));
+  border-radius: var(--r-pill);
+  box-shadow: 3px 3px 0 rgb(var(--pop-shadow));
+  transition: transform 80ms var(--spring), box-shadow 80ms var(--spring), opacity 80ms;
+  cursor: pointer;
+  user-select: none;
+}
+.pop-btn:hover { opacity: .92; }
+.pop-btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 rgb(var(--pop-shadow));
+}
+.pop-btn:disabled { opacity: .45; pointer-events: none; }
+
+/* Ghost variant */
+.pop-btn-ghost {
+  background: transparent;
+  color: rgb(var(--teal));
+  border: var(--line) solid rgb(var(--teal));
+  box-shadow: 3px 3px 0 rgb(var(--teal-light));
+}
+.pop-btn-ghost:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 rgb(var(--teal-light));
+}
+
+/* Danger variant */
+.pop-btn-danger {
+  background: rgb(var(--danger));
+  border-color: rgb(var(--ink));
+}
+
+/* ── Chip ─────────────────────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: var(--r-pill);
+  border: 2px solid rgb(var(--ink));
+  background: rgb(var(--teal-light));
+  color: rgb(var(--ink));
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgb(var(--ink-3)); border-radius: 999px; }
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--ink-3) / 0.35);
+  border-radius: 999px;
+}
+
+/* ── Selection ring (focused interactive elements) ──────────────────────── */
+:focus-visible {
+  outline: 2.5px solid rgb(var(--teal));
+  outline-offset: 2px;
+}
+
+/* ── Keyframes ───────────────────────────────────────────────────────────── */
+@keyframes drop-in {
+  from { opacity: 0; transform: translateY(12px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(.88); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes confetti-fall {
+  0%   { transform: translateY(-20px) rotate(0deg); opacity: 1; }
+  80%  { opacity: 1; }
+  100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* Landing page animations */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes float-a {
+  0%, 100% { transform: translateY(0px) rotate(-6deg); }
+  50%       { transform: translateY(-14px) rotate(-6deg); }
+}
+@keyframes float-b {
+  0%, 100% { transform: translateY(0px) rotate(8deg); }
+  50%       { transform: translateY(-10px) rotate(8deg); }
+}
+@keyframes float-c {
+  0%, 100% { transform: translateY(0px) rotate(4deg); }
+  50%       { transform: translateY(-18px) rotate(4deg); }
+}
+@keyframes float-d {
+  0%, 100% { transform: translateY(0px) rotate(-10deg); }
+  50%       { transform: translateY(-8px) rotate(-10deg); }
+}
+@keyframes board-pulse {
+  0%, 100% { opacity: .07; }
+  50%       { opacity: .13; }
+}
+@keyframes chain-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Animation utility classes */
+.animate-fade-up   { animation: fade-up  0.55s cubic-bezier(0.22,1,0.36,1) both; }
+.animate-fade-in   { animation: fade-in  0.4s ease both; }
+.animate-float-a   { animation: float-a  4.2s ease-in-out infinite; }
+.animate-float-b   { animation: float-b  3.6s ease-in-out infinite; }
+.animate-float-c   { animation: float-c  5.1s ease-in-out infinite; }
+.animate-float-d   { animation: float-d  4.7s ease-in-out infinite; }
+.animate-board     { animation: board-pulse 3s ease-in-out infinite; }
+.animate-chain-scroll { animation: chain-scroll 12s linear infinite; }
+.animate-spin-slow { animation: spin-slow 8s linear infinite; }
+
+/* Stagger delay helpers */
+.delay-0   { animation-delay: 0ms; }
+.delay-100 { animation-delay: 100ms; }
+.delay-150 { animation-delay: 150ms; }
+.delay-200 { animation-delay: 200ms; }
+.delay-300 { animation-delay: 300ms; }
+.delay-400 { animation-delay: 400ms; }
+.delay-500 { animation-delay: 500ms; }
+.delay-600 { animation-delay: 600ms; }
+.delay-700 { animation-delay: 700ms; }
+
+/* How-to-play step connector */
+.htpl-step::before {
+  content: '';
+  position: absolute;
+  left: 19px; top: 40px;
+  width: 2px; bottom: -12px;
+  background: rgb(var(--teal-light));
+  border-radius: 2px;
+}

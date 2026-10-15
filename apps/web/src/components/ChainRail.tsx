@@ -1,66 +1,74 @@
 "use client";
+import type React from "react";
 import type { ChainRailEntry } from "@/lib/types";
-import { shortAddr, explorerTx, cx } from "@/lib/utils";
+import { shortAddr, explorerTx } from "@/lib/utils";
 
-const STATE_DOT: Record<ChainRailEntry["state"], string> = {
-  queued:   "bg-ink-3",
-  sent:     "bg-cyan",
-  complete: "bg-cyan",
-  final:    "bg-mint",
+const STATE_COLOR: Record<ChainRailEntry["state"], string> = {
+  queued:   "rgb(var(--ink-3))",
+  sent:     "rgb(var(--amber))",
+  complete: "rgb(var(--amber))",
+  final:    "rgb(var(--teal))",
 };
-
 const STATE_LABEL: Record<ChainRailEntry["state"], string> = {
   queued:   "queued",
   sent:     "sent",
   complete: "complete",
-  final:    "final",
+  final:    "final ✓",
 };
 
 export function ChainRail({ entries }: { entries: ChainRailEntry[] }): React.JSX.Element {
   const finalCount = entries.filter((e) => e.state === "final").length;
 
   return (
-    <div className="flex flex-col gap-1 w-full">
+    <div className="flex flex-col gap-2 w-full">
       {/* Summary chip */}
-      <div className="flex items-center gap-2 rounded-pill border-[2px] border-ink bg-cloud px-3 py-1.5 shadow-pop-press text-[12px] font-body font-bold text-ink">
-        <span className={cx("h-2 w-2 rounded-full flex-shrink-0", finalCount > 0 ? "bg-mint" : "bg-ink-3")} />
-        <span>{finalCount} / {entries.length} moves final on Arc</span>
+      <div className="flex items-center gap-2">
+        <span
+          className="h-2.5 w-2.5 rounded-full flex-shrink-0"
+          style={{ background: finalCount > 0 ? "rgb(var(--teal))" : "rgb(var(--ink-3))" }}
+        />
+        <span className="text-xs font-bold font-display" style={{ color: "rgb(var(--ink-2))" }}>
+          {finalCount} / {entries.length} moves final on Arc
+        </span>
       </div>
 
-      {/* Per-ply rows (newest first) */}
-      <div className="max-h-[300px] overflow-y-auto flex flex-col gap-1 pr-0.5">
+      {/* Per-ply rows, newest first */}
+      <div className="max-h-[280px] overflow-y-auto flex flex-col gap-1.5 pr-0.5">
         {entries.map((e) => (
           <div
             key={e.ply}
-            className="flex items-center gap-2 rounded-chunk border-[2px] border-ink bg-cloud px-3 py-1.5 text-[11px] shadow-pop-press"
+            className="flex items-center gap-2 rounded-xl px-3 py-2 text-[11px] border-2"
+            style={{
+              background:  "rgb(var(--cloud))",
+              borderColor: e.state === "final" ? "rgb(var(--teal))" : "rgb(var(--ink) / 0.12)",
+            }}
           >
-            {/* State dot */}
-            <span className={cx("h-2 w-2 flex-shrink-0 rounded-full", STATE_DOT[e.state])} />
+            <span
+              className="h-2 w-2 flex-shrink-0 rounded-full"
+              style={{ background: STATE_COLOR[e.state] }}
+            />
+            <span className="font-bold w-5 shrink-0 tabular-nums font-display" style={{ color: "rgb(var(--ink))" }}>
+              {e.ply}
+            </span>
+            <span className="mono shrink-0 font-semibold" style={{ color: "rgb(var(--ink-2))" }}>{e.san}</span>
 
-            {/* Ply + move */}
-            <span className="font-body font-bold text-ink w-5 shrink-0">{e.ply}</span>
-            <span className="font-mono text-ink-2 shrink-0">{e.san}</span>
-
-            {/* State label */}
-            <span className={cx(
-              "ml-auto font-body text-[10px] font-bold shrink-0",
-              e.state === "final" ? "text-mint" : "text-ink-3",
-            )}>
+            <span className="ml-auto text-[10px] font-bold shrink-0" style={{ color: STATE_COLOR[e.state] }}>
               {STATE_LABEL[e.state]}
             </span>
 
-            {/* Finality time */}
             {e.finalMs !== undefined && (
-              <span className="font-mono text-[10px] text-ink-3 shrink-0">{e.finalMs}ms</span>
+              <span className="mono text-[10px] shrink-0" style={{ color: "rgb(var(--ink-3))" }}>
+                {e.finalMs}ms
+              </span>
             )}
 
-            {/* Explorer link */}
             {e.txHash && (
               <a
                 href={explorerTx(e.txHash)}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-mono text-[10px] text-violet underline shrink-0 hover:text-violet-deep"
+                className="mono text-[10px] underline shrink-0 hover:opacity-70"
+                style={{ color: "rgb(var(--teal))" }}
                 title={e.txHash}
               >
                 {shortAddr(e.txHash)}

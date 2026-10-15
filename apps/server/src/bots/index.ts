@@ -2,6 +2,10 @@
  * House bots: five levels using the vendored search.
  * Each bot has a fixed id, a name, and a wallet loaded from BOT_WALLET_IDS env.
  * On game start, getBotMove() is called and the result is fed to the referee.
+ *
+ * Self-healing: if a wallet row is missing from the DB (fresh database after
+ * server was already provisioned), we fetch the wallet from Circle read-only
+ * (GET /v1/w3s/wallets/{id}) and upsert the row — no new wallet is created.
  */
 import { bestCandidates, legalMoves, moveToUci } from "@final-move/chess";
 import { cfg } from "../config/index.ts";
@@ -28,6 +32,38 @@ const BOT_DEFS = [
 
 let _bots: BotProfile[] | null = null;
 
+/** Fetch a single wallet from Circle (read-only, no entity secret needed). */
+async function fetchWalletFromCircle(walletId: string): Promise<{ id: string; address: string } | null> {
+  try {
+    const res = await fetch(`https://api.circle.com/v1/w3s/wallets/${walletId}`, {
+      headers: { Authorization: `Bearer ${cfg.CIRCLE_API_KEY}` },
+    });
+    if (!res.ok) return null;
+    const json = await res.json() as { data?: { wallet?: { id: string; address: string } } };
+    return json.data?.wallet ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Upsert a wallet row that was fetched from Circle (self-healing path). */
+async function upsertWalletRow(
+  ownerType: string,
+  ownerId: string,
+  walletId: string,
+  address: string,
+): Promise<void> {
+  const rowId = `w_${ownerId}`;
+  await sql`
+    INSERT INTO wallets (id, owner_type, owner_id, circle_wallet_id, address, chain)
+    VALUES (${rowId}, ${ownerType}, ${ownerId}, ${walletId}, ${address}, ${cfg.CIRCLE_CHAIN})
+    ON CONFLICT (circle_wallet_id) DO UPDATE
+      SET address = EXCLUDED.address,
+          owner_type = EXCLUDED.owner_type,
+          owner_id = EXCLUDED.owner_id
+  `;
+}
+
 export async function loadBots(): Promise<BotProfile[]> {
   if (_bots) return _bots;
 
@@ -39,20 +75,58 @@ export async function loadBots(): Promise<BotProfile[]> {
     BOT_DEFS.map(async (def, i) => {
       const wid = walletIds[i];
       if (!wid) {
-        console.warn(`[bots] no wallet for ${def.id} — bot will have empty address`);
+        console.warn(`[bots] no wallet configured for ${def.id} — bot will be unavailable`);
         return { ...def, walletId: "", address: "" };
       }
 
-      // Look up the wallet address in our DB
+      // Try DB first
       const rows = await sql<{ address: string }[]>`
         SELECT address FROM wallets WHERE circle_wallet_id=${wid} LIMIT 1
       `;
-      const address = rows[0]?.address ?? "";
-      return { ...def, walletId: wid, address };
+      if (rows[0]?.address) {
+        return { ...def, walletId: wid, address: rows[0].address };
+      }
+
+      // Row missing (fresh DB) — fetch from Circle and upsert
+      console.log(`[bots] wallet row missing for ${def.id} (${wid}), fetching from Circle…`);
+      const remote = await fetchWalletFromCircle(wid);
+      if (remote?.address) {
+        await upsertWalletRow("bot", def.id, wid, remote.address);
+        console.log(`[bots] upserted wallet for ${def.id}: ${remote.address}`);
+        return { ...def, walletId: wid, address: remote.address };
+      }
+
+      console.warn(`[bots] could not resolve wallet for ${def.id} — bot will be unavailable`);
+      return { ...def, walletId: wid, address: "" };
     }),
   );
 
   return _bots;
+}
+
+/**
+ * Self-heal a single operator wallet (referee, treasury, etc.).
+ * Call once at startup for each wallet id that the server depends on.
+ */
+export async function ensureOperatorWallet(
+  label: string,
+  walletId: string,
+  ownerType = "operator",
+): Promise<string> {
+  const rows = await sql<{ address: string }[]>`
+    SELECT address FROM wallets WHERE circle_wallet_id=${walletId} LIMIT 1
+  `;
+  if (rows[0]?.address) return rows[0].address;
+
+  console.log(`[wallets] operator wallet "${label}" missing from DB, fetching from Circle…`);
+  const remote = await fetchWalletFromCircle(walletId);
+  if (remote?.address) {
+    await upsertWalletRow(ownerType, label, walletId, remote.address);
+    console.log(`[wallets] upserted "${label}": ${remote.address}`);
+    return remote.address;
+  }
+  console.warn(`[wallets] could not resolve operator wallet "${label}"`);
+  return "";
 }
 
 export function getBot(botId: string): BotProfile | undefined {
@@ -91,15 +165,7 @@ export async function createBotWallets(): Promise<void> {
     if (!wallet) throw new Error(`Failed to create wallet for ${def.id}`);
 
     // Upsert into wallets table
-    const rows = await sql<{ id: string }[]>`
-      SELECT id FROM wallets WHERE circle_wallet_id=${wallet.id} LIMIT 1
-    `;
-    if (!rows.length) {
-      await sql`
-        INSERT INTO wallets (id, owner_type, owner_id, circle_wallet_id, address, chain)
-        VALUES (${`w_${def.id}`}, 'bot', ${def.id}, ${wallet.id}, ${wallet.address}, ${cfg.CIRCLE_CHAIN})
-      `;
-    }
+    await upsertWalletRow("bot", def.id, wallet.id, wallet.address);
     console.log(`  ${def.id}  walletId=${wallet.id}  address=${wallet.address}`);
   }
   console.log("\nAdd to .env as BOT_WALLET_IDS (comma-separated).");

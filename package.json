@@ -14,13 +14,23 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "perft": "bun run --filter chess perft",
-    "check": "bun run lint && bun run typecheck"
+    "check": "bun run lint && bun run typecheck",
+    "start": "bash scripts/start-local.sh",
+    "server": "bun run apps/server/src/index.ts",
+    "web": "cd apps/web && bun run dev",
+    "migrate": "bun run apps/server/src/db/migrate.ts",
+    "smoke:e2e": "bun run apps/server/scripts/e2e-smoke.ts",
+    "smoke:stage2": "bun run apps/server/scripts/bot-vs-bot.ts",
+    "smoke:stage7": "bun run apps/server/scripts/stage7-smoke.ts",
+    "smoke:stage8": "bun run apps/server/scripts/stage8-smoke.ts",
+    "measure:gas": "bun run apps/server/scripts/measure-gas.ts"
   },
   "resolutions": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@next/eslint-plugin-next": "~15.5.27",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",

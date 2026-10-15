@@ -2,9 +2,23 @@
  * NextAuth v5 config.
  * X (Twitter) OAuth 2.0 with PKCE.
  * On first sign-in the server creates a Circle wallet for the user.
+ *
+ * Required env vars:
+ *   AUTH_SECRET (or SESSION_SECRET) — generate with: openssl rand -hex 32
+ *   X_CLIENT_ID
+ *   X_CLIENT_SECRET
  */
 import NextAuth, { type NextAuthResult } from "next-auth";
 import Twitter from "next-auth/providers/twitter";
+
+const authSecret = process.env.AUTH_SECRET ?? process.env.SESSION_SECRET;
+
+if (!authSecret && process.env.NODE_ENV === "production") {
+  throw new Error(
+    "AUTH_SECRET (or SESSION_SECRET) is required in production. " +
+    "Generate one with: openssl rand -hex 32",
+  );
+}
 
 const result: NextAuthResult = NextAuth({
   providers: [
@@ -35,7 +49,7 @@ const result: NextAuthResult = NextAuth({
   pages: {
     signIn: "/",
   },
-  secret: process.env.SESSION_SECRET,
+  secret: authSecret,
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

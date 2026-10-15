@@ -29,9 +29,17 @@ export function useGameWs(gameId: string, playerId: string): GameWsState {
 
   const connect = useCallback(() => {
     if (deadRef.current) return;
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const serverPort = process.env.NEXT_PUBLIC_SERVER_PORT ?? "3001";
-    const url = `${protocol}//${window.location.hostname}:${serverPort}/ws`;
+    // NEXT_PUBLIC_WS_URL: explicit WebSocket base (e.g. wss://api.finalmove.io)
+    //   — used in the separate-origin deploy (API behind its own domain/port).
+    // When absent, fall back to same-origin /ws so a reverse proxy or the
+    //   sandbox proxy.mjs can handle the upgrade transparently.
+    const explicitWsUrl = process.env.NEXT_PUBLIC_WS_URL;
+    const url = explicitWsUrl
+      ? `${explicitWsUrl}/ws`
+      : (() => {
+          const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+          return `${proto}//${window.location.host}/ws`;
+        })();
     const ws = new WebSocket(url);
     wsRef.current = ws;
 

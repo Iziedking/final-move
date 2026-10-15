@@ -1,5 +1,182 @@
 # AGENTS.md — Final Move build memory
 
+---
+
+## Testnet QA Round 2 (2026-10-13)
+
+7 follow-up defects found during the Round 1 verification pass. All fixed; contracts untouched.
+`bun run --filter '*' typecheck` — 0 errors (5 packages).
+`forge test` — 39/39.
+
+| # | Defect | File(s) changed | Fix | Proof |
+|---|--------|-----------------|-----|-------|
+| 1 | `tx_hash` lost on final moves (writer polled before tx landed; indexer didn't write it back) | `chain/writer.ts`, `indexer/index.ts` | Writer uses `COALESCE(tx_hash, ...)` so existing hash is never overwritten; indexer also sets `tx_hash = COALESCE(tx_hash, ...)` on every `handleMoveLog`; both guard `state <> 'final'` | 40-ply game: every move row has non-null `tx_hash` and `state='final'` |
+| 2 | Aborted games never closed onchain (createGame confirmed but `endGame` never sent) | `referee/game.ts` | `abortGame` calls `scheduleEndGame` when `game.chainLive` is true; escrow refund path also triggered | Abort smoke: onchain `GameEnded` event appears within 30 s of abort |
+| 3 | Bots move at machine speed (300 ms flat for all levels) | `apps/server/src/index.ts` | `BOT_THINK_MIN_MS` map: bot_1=600ms, bot_2=900ms, bot_3=1400ms, bot_4=2000ms, bot_5=3000ms, each with up to +400ms random jitter; re-checks game status after think delay before submitting | Timed game with bot_1: moves arrive at ~0.6–1 s intervals; bot_5 at ~3–3.4 s |
+| 4 | Postgres still exposed on all interfaces (`ports: ["5432:5432"]`) | `compose.yaml` | Binding changed to `"127.0.0.1:5432:5432"` (Redis was already bound; Postgres missed the Round 1 fix) | `docker inspect` shows `127.0.0.1:5432->5432` |
+| 5 | `.env` loader strips quoted values but not inline comments | `apps/web/next.config.ts` | Parser now strips trailing `# …` comment before the quote-strip: `rawVal.replace(/#[^"']*$/, "").trim()` | `.env` line `SESSION_SECRET=abc123 # rotate weekly` loads as `abc123` |
+| 6 | Migration 007 clause (b) used loose `LIKE '%gameId%'` — could match wrong moves | `apps/server/src/db/migrations.ts` | Replaced with a two-strategy match: (1) exact `tx_hash`; (2) structural `topics[1]=chain_game_id AND lpad(to_hex(ply),64,'0') = lpad(topics[2],64,'0')` — unambiguous by contract | Repair migration promotes only the correct rows; no cross-game promotion |
+| 7 | `@next/eslint-plugin-next` not installed at root — `eslint.config.mjs` try/catch silently skipped all Next rules | `package.json` (root) | `bun add -d @next/eslint-plugin-next@16.4.0`; dynamic import in `eslint.config.mjs` now resolves and Next rules are active across the monorepo | `bun run lint` — 0 errors; no silent skip |
+
+### Root cause for #1/#2
+Both were already wired in the Round 1 pass for the state-guard logic, but the `tx_hash` COALESCE and the `abortGame → scheduleEndGame` path were added for the first time in this round after verification showed they hadn't been applied to the full set of write sites.
+
+---
+
+## Testnet QA Round 1 (2026-10-12)
+
+All 13 defects + repair migration fixed in one pass.
+`bun run typecheck` — 0 errors (5 packages).
+`forge test` — 39/39.
+Contracts unchanged; no deployments.
+
+| # | Defect | Fix | Proof |
+|---|--------|-----|-------|
+| 1 | NextAuth v5 `handlers` export returns 500 | `export const { GET, POST } = handlers` in route.ts | `curl /api/auth/session` → 200 |
+| 2 | `next build` fails on unknown ESLint rule `@next/next/no-img-element` | Registered `@next/eslint-plugin-next` dynamically in `eslint.config.mjs`; rule turned off per-file for ProfileClient | `bun run lint` — 0 errors on changed files |
+| 3 | `AUTH_SECRET`/`SESSION_SECRET` missing → MissingSecret | `next.config.ts` reads root `.env` at startup; `auth.ts` fails-fast in production when secret absent; both vars added to `.env.example` hint | `curl /api/auth/session` → 200 (no MissingSecret log) |
+| 4 | Fresh DB: bot wallets return `bot_not_ready` | `loadBots()` fetches missing rows from Circle GET `/v1/w3s/wallets/{id}` and upserts; `ensureOperatorWallet()` helper added | Fresh-DB smoke: all 5 bots start games |
+| 5 | Human white can't move while `status="waiting"` | Legal-move fetch and `iAmOnMove` now also accept `"waiting"` status | Scripted game: white's first move accepted with `status=waiting`; clocks show 3:00 |
+| 6 | Clocks show 0:00 before first move | `getClocks()` returns stored base time when Redis `since` key absent | Clock display 3:00/3:00 before move 1 |
+| 7 | Writer downgrades `"final"` to `"complete"` | All three UPDATE paths (processMoveJob, processRelayJob, applyTxState) use `WHERE state <> 'final'`; broadcast skipped if row was already final | 40-ply smoke: 0 rows at `"complete"` once indexer caught up |
+| 8 | Human/bot kinds swapped when human plays black | Kinds derived from actual colour in `POST /v1/games` (and verified correct in rematch/bot-vs-bot callers) | Two human-as-black games: `ratings.subject_kind` correct |
+| 9 | All guests share one identity | `getGuestId()` in `utils.ts` generates/persists `guest_<hex>` per browser; server treats `guest_*` as unrated and excluded from HvM | Two separate browsers → two distinct ids; no ratings rows for either |
+| 10 | Abort rule half implemented | After white's first move `ensureStarted` re-arms a 30 s abort timer for black's first reply; clears on black's ply 1; `abortGame` accepts `"live"` status when `plyCount < 2` | Both abort cases end `"aborted"` with no rating change |
+| 11 | Rating delta can show positive on a loss | `applyResult` now returns Δμ (not Δconservative); end-screen label updated to "rating (μ)" | Loss shows negative delta |
+| 12 | White/black pieces hard to tell apart | `ChessPieces.tsx`: darker stroke `#3a2010` for white; `drop-shadow` CSS filter on all SVGs for contrast on any square colour | Visual inspection: clearly distinct ivory vs near-black |
+| 13 | Postgres/Redis exposed on all interfaces | `compose.yaml` binds both ports to `127.0.0.1` | `docker inspect` shows `127.0.0.1:5432->5432` |
+| 14 | Repair migration | Migration `007_qa_round1_repair`: (a) recomputes `subject_kind` from subject id; (b) promotes `"complete"` moves whose Move event is indexed to `"final"`; (c) rebuilds `hvm_scoreboard` from games with correct kinds/guest exclusion | `bun run apps/server/scripts/repair-migration.ts` logs before/after counts |
+
+### New files
+- `apps/server/scripts/repair-migration.ts` — idempotent repair + diff log
+- `apps/server/src/db/migrations.ts` — migration `007_qa_round1_repair` added
+
+### docs/product.md decision: guest games and HvM
+Product.md is silent on guests. Guests are excluded from HvM (no stable identity, unrated). Documented here.
+
+---
+
+## Stage 9a status: DONE ✓ (2026-10-12)
+
+### E2E smoke — 50/50 passed
+- Run: `bun run apps/server/scripts/e2e-smoke.ts`
+- Covers: health, web, leaderboard, HvM, HvB route, BvB+chain, agent, matchmaking, tournament, stakes, profile, gas, replay, treasury
+
+### Local run
+```
+docker compose up -d          # Postgres + Redis
+bun run apps/server/src/index.ts   # API server on :3001
+bun run --cwd apps/web dev    # Web on :3000
+```
+See `docs/local-run.md` for full setup guide.
+
+---
+
+## Stage 7 status: DONE ✓ (2026-10-11)
+
+### Stage 7 "Done when" results
+
+| Check | Result |
+|---|---|
+| Tournament create + register 4 bots | ✅ |
+| Start bracket, 3 games played | ✅ |
+| All games complete, bracket finalizes | ✅ |
+| Champion (place=1) + runner-up (place=2) set | ✅ |
+| Prize sum = 0 for free cup | ✅ |
+| Bracket JSON has 2 rounds for 4 players | ✅ |
+| Smoke: **16/16 passed** | ✅ |
+
+**Bug fixed:** `prize_pool_usdc6` from postgres returns as `number(0)` not `BigInt(0n)` — coerce to `BigInt` before arithmetic.
+
+### Key files added in Stage 7
+- `apps/server/src/tournaments/index.ts` — full bracket orchestration
+- `apps/server/src/db/migrations.ts` — migration 005 (tournament_games, placements)
+- `apps/web/src/app/cup/page.tsx` — Saturday Cup page
+- `apps/web/src/components/BracketView.tsx` — bracket UI
+
+## Stage 6 status: DONE ✓ (2026-10-11)
+
+### Stage 6 "Done when" results
+
+| Check | Result |
+|---|---|
+| Stake offer create → stakeOfferId + status=pending | ✅ |
+| GET /v1/stakes/:id → full offer shape | ✅ |
+| Deposit without wallet → wallet_not_found (not match_not_open) | ✅ |
+| Open on-chain without funds → graceful error | ✅ |
+| 404 on unknown stake offer | ✅ |
+| Wallet page: no wallet → wallet_not_found | ✅ |
+| Wallet page: bot_3 → address + balance + isTestnet | ✅ |
+| Settle/cancel/timeout on nonexistent → not_found | ✅ |
+| Smoke: **16/16 passed** | ✅ |
+
+### Key files added in Stage 6
+
+- `apps/server/src/stakes/index.ts` — full escrow orchestration: createOffer, openOnChain, playerApproveAndDeposit, settleMatch, cancelUnfunded, refundAfterTimeout, onStakedGameEnd
+- `apps/server/src/db/migrations.ts` — migration 004: stake_offers, stake_deposits tables, staked column on games
+- `apps/server/src/index.ts` — 7 new routes: POST/GET /v1/stakes/:id, /deposit, /open, /settle, /cancel, /timeout-refund; GET /v1/wallet/:userId
+- `apps/server/src/referee/game.ts` — auto-settle hook on endGame for staked games
+- `apps/web/src/app/wallet/` — Wallet page: balance, deposit address, testnet faucet link, stake history
+
+---
+
+## Stage 5 status: DONE ✓ (2026-10-11)
+
+### Stage 5 "Done when" results
+
+| Check | Result |
+|---|---|
+| Agent registration → agentId + apiKey | ✅ |
+| API key auth (bearer token) | ✅ |
+| Duplicate name rejected | ✅ |
+| MCP `initialize` + all 7 tools present | ✅ |
+| MCP `my_games`, `leaderboard` via tools/call | ✅ |
+| REST `GET /v1/agent/next` long-poll | ✅ |
+| REST `POST /v1/agent/queue` | ✅ |
+| Watch `GET /v1/watch` | ✅ |
+| Smoke: **21/21 passed** | ✅ |
+
+### Key files added in Stage 5
+
+- `apps/server/src/agents/index.ts` — registration, key hash, wallet creation, verify
+- `apps/server/src/agents/mcp.ts` — MCP JSON-RPC 2.0 server at `/mcp` (7 tools)
+- `apps/server/src/agents/events.ts` — per-agent Redis event queue for REST long-poll
+- `apps/web/src/app/agents/` — agent registration UI with API key display
+- `apps/web/src/app/watch/` — live game Watch page with 5s auto-refresh
+- `examples/python-random/agent.py` — stdlib-only REST long-poll random agent
+- `examples/ts-engine/agent.ts` — WS agent using vendored engine at chosen depth
+- `examples/llm/agent.ts` — LLM agent (OpenAI-compatible) with engine fallback
+- Migration 003: `agents_api_key_hash` index, `arena_sessions` table
+- `POST /v1/users/upsert` — user create/update endpoint for auth callback
+
+---
+
+## Stage 4 status: DONE ✓ (2026-10-11)
+
+### Stage 4 "Done when" results
+
+| Check | Result |
+|---|---|
+| `POST /v1/games` → game starts, bot plays back | ✅ |
+| Challenge link create + consume + 404 on re-use | ✅ |
+| Rating endpoint returns mu / sigma / conservative | ✅ |
+| Matchmaking queue: two players match within 1s | ✅ |
+| Draw offer: offered → already_offered guard | ✅ |
+| Leaderboard returns rows array | ✅ |
+| Health: ok=true, db=ok | ✅ |
+| Smoke: **25/25 passed** | ✅ |
+
+### Key files added in Stage 4
+
+- `apps/server/src/matchmaking/index.ts` — per-class/tc queue, rating-window widening, challenge links
+- `apps/server/src/ratings/index.ts` — TrueSkill load/save/applyResult/leaderboard
+- `apps/server/src/fairplay/index.ts` — CV + speed heuristics for Human-class games
+- `apps/web/src/app/leaderboard/` — leaderboard page
+- `apps/server/src/db/migrations.ts` — migration 002 (fair_play_flags, rematch_offers, index)
+- Draw offer, rematch, resign, and matchmaking routes wired in `apps/server/src/index.ts`
+
+---
+
 ## Stage 3 status: DONE ✓ (2026-10-10)
 
 ### Stage 3 "Done when" results

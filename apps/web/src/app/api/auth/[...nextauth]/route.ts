@@ -1,1 +1,1 @@
-export { handlers as GET, handlers as POST } from "@/auth";
+export const { GET, POST } = (await import("@/auth")).handlers;

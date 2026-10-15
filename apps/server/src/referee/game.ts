@@ -176,6 +176,19 @@ async function ensureStarted(game: LiveGame) {
   game.abortTimer = undefined;
   await sql`UPDATE games SET status='live', started_at=now() WHERE id=${game.id}`;
   await startClock(game.id);
+  // Re-arm a 30s abort window for black's first reply.
+  // If black never moves, the game aborts (no rating change, no "abandon").
+  // This timer is cleared by handleMove when black's first move arrives.
+  game.abortTimer = setTimeout(() => abortIfBlackHasNotMoved(game.id), 30_000);
+}
+
+async function abortIfBlackHasNotMoved(gameId: string) {
+  const game = liveGames.get(gameId);
+  if (!game || game.status !== "live") return;
+  // Abort only if black has never moved (plyCount < 2)
+  if (game.plyCount < 2) {
+    await abortGame(gameId, "aborted");
+  }
 }
 
 // ── Move handler ──────────────────────────────────────────────────────────────
@@ -199,8 +212,16 @@ export async function handleMove(
   const expectedId = expectedColor === "w" ? game.whiteId : game.blackId;
   if (moverId !== expectedId) return { ok: false, reason: "not_your_turn" };
 
-  // Ensure game is live
+  // Ensure game is live (also arms the black-first-move abort timer)
   await ensureStarted(game);
+
+  // Clear the black-first-move abort timer once black makes their first move.
+  // At this point plyCount is still 1 (white has moved once; black is responding).
+  if (game.plyCount === 1 && expectedColor === "b") {
+    clearTimeout(game.abortTimer);
+    game.abortTimer = undefined;
+  }
+  // From ply 2 onwards, abandon rules apply (not abort); do nothing extra here.
 
   // Reset abandon timer
   clearTimeout(game.abandonTimer);
@@ -330,6 +351,44 @@ export async function endGame(
     }
   }).catch((e: unknown) => console.error("[ratings] failed:", (e as Error).message));
 
+  // Auto-settle staked match if fully funded
+  if (game.status === "ended") {
+    const gameRow = await sql<{ stake_offer_id: string | null }[]>`
+      SELECT stake_offer_id FROM games WHERE id=${game.id}
+    `;
+    const stakeOfferId = gameRow[0]?.stake_offer_id;
+    if (stakeOfferId) {
+      import("../stakes/index.ts").then(({ onStakedGameEnd }) =>
+        onStakedGameEnd(stakeOfferId).catch((e: unknown) =>
+          console.error("[stakes] auto-settle failed:", (e as Error).message),
+        ),
+      ).catch(() => {});
+    }
+  }
+
+  // Tournament bracket advancement
+  {
+    const tgRow = await sql<{ tournament_id: string }[]>`
+      SELECT tournament_id FROM tournament_games WHERE game_id=${game.id} LIMIT 1
+    `;
+    if (tgRow[0]) {
+      import("../tournaments/index.ts").then(({ onTournamentGameEnd }) => {
+        const winnerId = result === "white" ? game.whiteId
+                       : result === "black" ? game.blackId
+                       : null; // draw → white advances by tiebreak in onTournamentGameEnd
+        return onTournamentGameEnd(game.id, winnerId);
+      }).catch((e: unknown) => console.error("[tournament] advancement failed:", (e as Error).message));
+    }
+  }
+
+  // Streak + title updates (async, non-blocking)
+  updateStreaksAndTitles(game, result).catch((e: unknown) =>
+    console.error("[streaks] failed:", (e as Error).message),
+  );
+
+  // HvM scoreboard update (async, non-blocking)
+  updateHvM(game, result).catch(() => {});
+
   // Fair-play check for Human class
   if (game.class === "human" && result !== "aborted") {
     checkFairPlay(game.id).catch((e: unknown) =>
@@ -375,12 +434,42 @@ function scheduleEndGame(game: LiveGame, result: GameResult, reason: GameEndReas
 
 async function abortGame(gameId: string, reason: GameEndReason) {
   const game = liveGames.get(gameId);
-  if (!game || game.status !== "waiting") return;
+  // Allow abort from "waiting" (no first move at all) OR "live" with plyCount < 2
+  // (white moved but black never replied within 30 s)
+  if (!game) return;
+  if (game.status !== "waiting" && !(game.status === "live" && game.plyCount < 2)) return;
+  clearTimeout(game.abandonTimer);
+  clearTimeout(game.abortTimer);
   game.status = "aborted";
   game.result = "aborted";
   game.reason = reason;
   await sql`UPDATE games SET status='aborted', result='aborted', reason=${reason}, ended_at=now() WHERE id=${gameId}`;
+  await deleteClocks(gameId);
   redis.publish(`game:${gameId}`, JSON.stringify({ type: "game_end", gameId, result: "aborted", reason })).catch(() => {});
+
+  // Close the game on-chain only when createGame already confirmed.
+  // The contract requires pliesRecorded == totalPlies before endGame succeeds,
+  // so wait for any already-submitted move plies to clear first.
+  if (game.chainLive) {
+    const fenHash = "0x" + createHash("sha256").update(toFEN(game.position)).digest("hex").slice(0, 64);
+    scheduleEndGame(game, "aborted", reason, fenHash);
+  }
+
+  // For staked games, trigger escrow refund path (abort ⇒ both players refunded)
+  {
+    const gameRow = await sql<{ stake_offer_id: string | null }[]>`
+      SELECT stake_offer_id FROM games WHERE id=${gameId}
+    `;
+    const stakeOfferId = gameRow[0]?.stake_offer_id;
+    if (stakeOfferId) {
+      import("../stakes/index.ts").then(({ onStakedGameEnd }) =>
+        onStakedGameEnd(stakeOfferId).catch((e: unknown) =>
+          console.error("[stakes] abort refund failed:", (e as Error).message),
+        ),
+      ).catch(() => {});
+    }
+  }
+
   liveGames.delete(gameId);
 }
 
@@ -416,6 +505,94 @@ function buildPgn(game: LiveGame): string {
     const moveNum = Math.floor(i / 2) + 1;
     return i % 2 === 0 ? `${moveNum}. ${uci}` : uci;
   }).join(" ");
+}
+
+// ── Streaks, Titles, HvM ─────────────────────────────────────────────────────
+
+async function updateStreaksAndTitles(game: LiveGame, result: GameResult) {
+  if (result === "aborted") return;
+  const players = [
+    { id: game.whiteId, won: result === "white" },
+    { id: game.blackId, won: result === "black" },
+  ];
+  for (const { id, won } of players) {
+    // Upsert streak
+    const rows = await sql<{ current_streak: number; best_streak: number }[]>`
+      SELECT current_streak, best_streak FROM streaks
+      WHERE subject_id=${id} AND class=${game.class}
+    `;
+    const cur = rows[0];
+    const prevStreak = cur?.current_streak ?? 0;
+    const prevBest   = cur?.best_streak ?? 0;
+    let newStreak: number;
+    if (result === "draw") {
+      newStreak = 0; // draw resets streak
+    } else if (won) {
+      newStreak = prevStreak >= 0 ? prevStreak + 1 : 1;
+    } else {
+      newStreak = prevStreak <= 0 ? prevStreak - 1 : -1;
+    }
+    const newBest = Math.max(prevBest, newStreak);
+    await sql`
+      INSERT INTO streaks (subject_id, subject_kind, class, current_streak, best_streak)
+      VALUES (${id}, ${id.startsWith("bot_") ? "bot" : id.startsWith("ag_") ? "agent" : "user"},
+              ${game.class}, ${newStreak}, ${newBest})
+      ON CONFLICT (subject_id, class)
+      DO UPDATE SET current_streak=${newStreak},
+                    best_streak=GREATEST(streaks.best_streak, ${newBest}),
+                    updated_at=now()
+    `;
+    // Award titles
+    if (newStreak === 5) {
+      await sql`
+        INSERT INTO titles (subject_id, title) VALUES (${id}, 'On Fire')
+        ON CONFLICT DO NOTHING
+      `;
+    }
+    if (newStreak === 10) {
+      await sql`
+        INSERT INTO titles (subject_id, title) VALUES (${id}, 'Unstoppable')
+        ON CONFLICT DO NOTHING
+      `;
+    }
+  }
+  // First win title
+  if (result !== "draw") {
+    const winnerId = result === "white" ? game.whiteId : game.blackId;
+    const totalWins = await sql<{ cnt: string }[]>`
+      SELECT COUNT(*) as cnt FROM games
+      WHERE (white_id=${winnerId} AND result='white')
+         OR (black_id=${winnerId} AND result='black')
+    `;
+    if (Number(totalWins[0]?.cnt ?? 0) === 1) {
+      await sql`
+        INSERT INTO titles (subject_id, title) VALUES (${winnerId}, 'First Win')
+        ON CONFLICT DO NOTHING
+      `;
+    }
+  }
+}
+
+async function updateHvM(game: LiveGame, result: GameResult) {
+  if (result === "aborted") return;
+  const isGuestId = (id: string) => id === "guest" || id.startsWith("guest_");
+  // Guests are excluded from HvM (no stable identity, unrated)
+  if (isGuestId(game.whiteId) || isGuestId(game.blackId)) return;
+  const whiteIsHuman = game.whiteKind === "user";
+  const blackIsHuman = game.blackKind === "user";
+  // Only count human vs machine games
+  if (whiteIsHuman === blackIsHuman) return;
+  const humanWon = (whiteIsHuman && result === "white") || (blackIsHuman && result === "black");
+  const machineWon = (!whiteIsHuman && result === "white") || (!blackIsHuman && result === "black");
+  await sql`
+    INSERT INTO hvm_scoreboard (id, human_wins, machine_wins, draws)
+    VALUES (1, 0, 0, 0)
+    ON CONFLICT (id) DO UPDATE SET
+      human_wins   = hvm_scoreboard.human_wins   + ${humanWon ? 1 : 0},
+      machine_wins = hvm_scoreboard.machine_wins + ${machineWon ? 1 : 0},
+      draws        = hvm_scoreboard.draws        + ${result === "draw" ? 1 : 0},
+      updated_at   = now()
+  `;
 }
 
 // ── Gas top-up ────────────────────────────────────────────────────────────────

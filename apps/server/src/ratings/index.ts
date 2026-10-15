@@ -8,7 +8,6 @@ import { sql } from "../db/client.ts";
 import {
   updateOneVsOne,
   updateDraw,
-  conservative,
   defaultRating,
 } from "@final-move/chess";
 import type { Rating } from "@final-move/chess";
@@ -70,6 +69,9 @@ export async function applyResult(opts: {
   }
   // Aborted games don't count
   if (opts.result === "aborted") return null;
+  // Guests are never rated (they have no stable identity beyond this browser)
+  const isGuestId = (id: string) => id === "guest" || id.startsWith("guest_");
+  if (isGuestId(opts.whiteId) || isGuestId(opts.blackId)) return null;
 
   const wBefore = await loadRating(opts.whiteId, opts.cls, opts.tc);
   const bBefore = await loadRating(opts.blackId, opts.cls, opts.tc);
@@ -96,16 +98,19 @@ export async function applyResult(opts: {
     saveRating(opts.blackId, opts.blackKind, opts.cls, opts.tc, bAfter),
   ]);
 
+  // delta is the change in mu (not the conservative rating), so a loss always
+  // reads as negative.  The conservative value (mu - 3σ) is used for leaderboard
+  // ordering only and is not exposed to the end-screen.
   return {
     white: {
       before: wBefore,
       after:  wAfter,
-      delta:  Math.round((conservative(wAfter) - conservative(wBefore)) * 10) / 10,
+      delta:  Math.round((wAfter.mu - wBefore.mu) * 10) / 10,
     },
     black: {
       before: bBefore,
       after:  bAfter,
-      delta:  Math.round((conservative(bAfter) - conservative(bBefore)) * 10) / 10,
+      delta:  Math.round((bAfter.mu - bBefore.mu) * 10) / 10,
     },
   };
 }

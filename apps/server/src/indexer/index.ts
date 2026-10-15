@@ -158,11 +158,15 @@ async function handleMoveLog(log: Log, txHash: string) {
     if (!rows.length) return;
 
     const row = rows[0]!;
+    // Always set tx_hash here (writer may have polled before the tx landed).
+    // COALESCE keeps any existing hash in case it was already written.
     await sql`
       UPDATE moves
-      SET state='final', block=${String(log.blockNumber ?? 0)},
-          final_at=${blockTime?.toISOString() ?? null}
-      WHERE id=${row.id} AND state NOT IN ('final')
+      SET state    = 'final',
+          block    = ${String(log.blockNumber ?? 0)},
+          final_at = ${blockTime?.toISOString() ?? null},
+          tx_hash  = COALESCE(tx_hash, ${txHash})
+      WHERE id = ${row.id} AND state NOT IN ('final')
     `;
 
     // Broadcast final update

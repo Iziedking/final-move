@@ -17,3 +17,5 @@ packages/contracts/broadcast/*/dry-run/
 .DS_Store
 .arc-studio/
 *.tsbuildinfo
+compose.override.yaml
+arc-studio-fix-prompt*.md
