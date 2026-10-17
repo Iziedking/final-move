@@ -2,9 +2,12 @@
  * TrueSkill rating persistence.
  * Called by the referee when a game ends.
  * Two classes (open / human), per time-control.
+ *
+ * QA Round 4A: read-compute-write now runs inside a transaction with
+ * SELECT ... FOR UPDATE to prevent lost updates when two games end concurrently.
  */
 
-import { sql } from "../db/client.ts";
+import { sql }         from "../db/client.ts";
 import {
   updateOneVsOne,
   updateDraw,
@@ -51,8 +54,8 @@ export interface RatingDelta {
 
 /**
  * Apply a game result and persist ratings for both players.
- * Returns the before/after deltas so the UI can show "+12 μ" etc.
- * Bots don't participate in Human-class ratings.
+ * Runs inside a Postgres transaction with SELECT … FOR UPDATE so two concurrent
+ * game-end events never produce lost updates on the same row.
  */
 export async function applyResult(opts: {
   whiteId:   string;
@@ -73,46 +76,90 @@ export async function applyResult(opts: {
   const isGuestId = (id: string) => id === "guest" || id.startsWith("guest_");
   if (isGuestId(opts.whiteId) || isGuestId(opts.blackId)) return null;
 
-  const wBefore = await loadRating(opts.whiteId, opts.cls, opts.tc);
-  const bBefore = await loadRating(opts.blackId, opts.cls, opts.tc);
+  // Use a transaction + advisory lock per (whiteId, blackId) pair to prevent
+  // concurrent game-end events from racing each other's updates.
+  let delta: RatingDelta | null = null;
 
-  let wAfter: Rating;
-  let bAfter: Rating;
+  await sql.begin(async (tx) => {
+    // Upsert placeholder rows first so FOR UPDATE has something to lock.
+    await tx`
+      INSERT INTO ratings (subject_id, subject_kind, class, time_control, mu, sigma, games, updated_at)
+      VALUES
+        (${opts.whiteId}, ${opts.whiteKind}, ${opts.cls}, ${opts.tc},
+         ${defaultRating().mu}, ${defaultRating().sigma}, 0, now()),
+        (${opts.blackId}, ${opts.blackKind}, ${opts.cls}, ${opts.tc},
+         ${defaultRating().mu}, ${defaultRating().sigma}, 0, now())
+      ON CONFLICT DO NOTHING
+    `;
 
-  if (opts.result === "white") {
-    const updated = updateOneVsOne(wBefore, bBefore);
-    wAfter = updated.winner;
-    bAfter = updated.loser;
-  } else if (opts.result === "black") {
-    const updated = updateOneVsOne(bBefore, wBefore);
-    wAfter = updated.loser;
-    bAfter = updated.winner;
-  } else {
-    const updated = updateDraw(wBefore, bBefore);
-    wAfter = updated.a;
-    bAfter = updated.b;
-  }
+    // Lock both rows in a deterministic order to avoid deadlocks.
+    const sorted = [opts.whiteId, opts.blackId].sort();
+    const idA = sorted[0]!;
+    const idB = sorted[1]!;
+    const locked = await tx`
+      SELECT subject_id, mu, sigma FROM ratings
+      WHERE subject_id IN (${idA}, ${idB})
+        AND class=${opts.cls} AND time_control=${opts.tc}
+      ORDER BY subject_id
+      FOR UPDATE
+    ` as unknown as { subject_id: string; mu: number; sigma: number }[];
 
-  await Promise.all([
-    saveRating(opts.whiteId, opts.whiteKind, opts.cls, opts.tc, wAfter),
-    saveRating(opts.blackId, opts.blackKind, opts.cls, opts.tc, bAfter),
-  ]);
+    const wRow = locked.find((r: { subject_id: string; mu: number; sigma: number }) => r.subject_id === opts.whiteId) ?? { mu: defaultRating().mu, sigma: defaultRating().sigma };
+    const bRow = locked.find((r: { subject_id: string; mu: number; sigma: number }) => r.subject_id === opts.blackId) ?? { mu: defaultRating().mu, sigma: defaultRating().sigma };
+    const wBefore: Rating = { mu: wRow.mu, sigma: wRow.sigma };
+    const bBefore: Rating = { mu: bRow.mu, sigma: bRow.sigma };
 
-  // delta is the change in mu (not the conservative rating), so a loss always
-  // reads as negative.  The conservative value (mu - 3σ) is used for leaderboard
-  // ordering only and is not exposed to the end-screen.
-  return {
-    white: {
-      before: wBefore,
-      after:  wAfter,
-      delta:  Math.round((wAfter.mu - wBefore.mu) * 10) / 10,
-    },
-    black: {
-      before: bBefore,
-      after:  bAfter,
-      delta:  Math.round((bAfter.mu - bBefore.mu) * 10) / 10,
-    },
-  };
+    let wAfter: Rating;
+    let bAfter: Rating;
+
+    if (opts.result === "white") {
+      const updated = updateOneVsOne(wBefore, bBefore);
+      wAfter = updated.winner;
+      bAfter = updated.loser;
+    } else if (opts.result === "black") {
+      const updated = updateOneVsOne(bBefore, wBefore);
+      wAfter = updated.loser;
+      bAfter = updated.winner;
+    } else {
+      const updated = updateDraw(wBefore, bBefore);
+      wAfter = updated.a;
+      bAfter = updated.b;
+    }
+
+    await tx`
+      UPDATE ratings SET mu=${wAfter.mu}, sigma=${wAfter.sigma},
+        games=games+1, updated_at=now()
+      WHERE subject_id=${opts.whiteId} AND class=${opts.cls} AND time_control=${opts.tc}
+    `;
+    await tx`
+      UPDATE ratings SET mu=${bAfter.mu}, sigma=${bAfter.sigma},
+        games=games+1, updated_at=now()
+      WHERE subject_id=${opts.blackId} AND class=${opts.cls} AND time_control=${opts.tc}
+    `;
+
+    delta = {
+      white: {
+        before: wBefore,
+        after:  wAfter,
+        delta:  Math.round((wAfter.mu - wBefore.mu) * 10) / 10,
+      },
+      black: {
+        before: bBefore,
+        after:  bAfter,
+        delta:  Math.round((bAfter.mu - bBefore.mu) * 10) / 10,
+      },
+    };
+  });
+
+  return delta;
+}
+
+export async function getRating(
+  subjectId: string,
+  cls: GameClass,
+  tc: TimeControl,
+): Promise<Rating> {
+  return loadRating(subjectId, cls, tc);
 }
 
 export async function getLeaderboard(

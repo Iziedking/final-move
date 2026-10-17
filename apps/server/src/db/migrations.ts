@@ -409,6 +409,9 @@ export const migrations: { name: string; sql: string }[] = [
       END $$;
 
       -- Step 2: Re-promote with the tight (gameId, ply) match.
+      -- Note: Postgres UPDATE … FROM requires listing all tables in FROM clause;
+      -- JOIN inside FROM is not valid here. Use a comma-separated FROM list with
+      -- WHERE conditions instead.
       DO $$
       DECLARE
         promoted integer;
@@ -418,9 +421,9 @@ export const migrations: { name: string; sql: string }[] = [
               block    = ce.block_number,
               final_at = COALESCE(ce.block_time, now()),
               tx_hash  = COALESCE(m.tx_hash, ce.tx_hash)
-          FROM chain_events ce
-          JOIN games g ON g.id = m.game_id
-          WHERE m.state = 'complete'
+          FROM chain_events ce, games g
+          WHERE g.id = m.game_id
+            AND m.state = 'complete'
             AND ce.event_name = 'Move'
             AND (
               (m.tx_hash IS NOT NULL AND m.tx_hash = ce.tx_hash)
@@ -433,6 +436,34 @@ export const migrations: { name: string; sql: string }[] = [
         GET DIAGNOSTICS promoted = ROW_COUNT;
         RAISE NOTICE '[008] promoted % move(s) to final', promoted;
       END $$;
+    `,
+  },
+
+  // ── 009 — Add chain_game_id column to chain_events for exact replay matching
+  //         Migration 007/008 extracts the game id from args_json via jsonb path
+  //         which is slow and brittle (LIKE-based in older code could mix games).
+  //         This migration adds a dedicated indexed column and back-fills it.
+  //
+  //         Indexer (QA Round 4A) now writes chain_game_id on every insert.
+  //         The replay query can then use an exact equality match.
+  {
+    name: "009_chain_events_chain_game_id",
+    sql: `
+      ALTER TABLE chain_events
+        ADD COLUMN IF NOT EXISTS chain_game_id text;
+
+      -- Back-fill from args_json topic[1] for Move/GameCreated/GameEnded events
+      UPDATE chain_events
+        SET chain_game_id = args_json::jsonb #>> '{topics,1}'
+        WHERE chain_game_id IS NULL
+          AND event_name IN ('Move','GameCreated','GameEnded')
+          AND args_json IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_chain_events_chain_game_id
+        ON chain_events (chain_game_id)
+        WHERE chain_game_id IS NOT NULL;
+
+      RAISE NOTICE '[009] back-filled chain_game_id on chain_events';
     `,
   },
 ];

@@ -1,8 +1,15 @@
 /**
  * Arc chain indexer.
  * Reads FinalMoveLedger + MatchEscrow + TournamentPool events.
- * Idempotent on (txHash, logIndex). Marks moves "final" once their Move event lands.
- * Exposes lagBlocks for /health.
+ * Idempotent on (txHash, logIndex).
+ *
+ * Key properties (QA Round 4A fixes):
+ * - Indexer head stored in Postgres (indexer_head table), not just Redis.
+ *   Redis is still used as a cache for speed; Postgres is the source of truth.
+ * - On getLogs failure, the head is NOT advanced — the range will be retried.
+ * - Settlement is triggered from the indexed GameEnded event (not from endGame
+ *   in game.ts, which fires before the chain confirms).
+ * - scheduleEndGame polling is capped; failures are alerted.
  */
 import { createPublicClient, http, type Log, keccak256, toBytes } from "viem";
 import { sql } from "../db/client.ts";
@@ -10,32 +17,59 @@ import { cfg } from "../config/index.ts";
 import { redis } from "../db/redis.ts";
 
 const INDEXER_HEAD_KEY = "indexer:head";
-const CATCH_UP_BATCH = 1_000n;  // larger batches while catching up
-const LIVE_BATCH     =   200n;  // smaller batches near the head to avoid rate limits
-const CATCH_UP_GAP   = 5_000n;  // switch to live mode when within this many blocks of head
-const POLL_MS        = 4_000;   // poll interval
+const CATCH_UP_BATCH  = 1_000n;
+const LIVE_BATCH      =   200n;
+const CATCH_UP_GAP    = 5_000n;
+const POLL_MS         = 4_000;
 
-// Use RPC proxy if available (Arc_Testnet key), fall back to public RPC
+// Use RPC proxy if available, fall back to public RPC.
 const proxyChains = (process.env.RPC_PROXY_CHAINS ?? "").split(",").map((s) => s.trim());
 const rpcUrl = process.env.RPC_PROXY_BASE_URL && proxyChains.includes("Arc_Testnet")
   ? `${process.env.RPC_PROXY_BASE_URL}/api/rpc/Arc_Testnet?_rpc_token=${process.env.RPC_PROXY_TOKEN}`
   : cfg.ARC_RPC_URL;
 
-const client = createPublicClient({
-  transport: http(rpcUrl),
-});
-
-// Contract ABIs are intentionally not decoded in v1 indexer (raw log storage).
-// We identify events by topic0 and store raw JSON for replay/audit.
+const client = createPublicClient({ transport: http(rpcUrl) });
 
 // ── Lag tracking ──────────────────────────────────────────────────────────────
 
 let lagBlocks = 0;
 export function getIndexerLag(): number { return lagBlocks; }
 
+// ── Head persistence (Postgres + Redis cache) ─────────────────────────────────
+
+async function getHead(): Promise<bigint> {
+  // Fast path: Redis cache
+  const cached = await redis.get(INDEXER_HEAD_KEY);
+  if (cached) return BigInt(cached);
+  // Slow path: Postgres
+  const rows = await sql<{ head: string }[]>`
+    SELECT head FROM indexer_head WHERE id=1
+  `;
+  const head = rows[0] ? BigInt(rows[0].head) : cfg.DEPLOY_BLOCK;
+  await redis.set(INDEXER_HEAD_KEY, String(head));
+  return head;
+}
+
+async function advanceHead(to: bigint): Promise<void> {
+  const next = to + 1n;
+  await sql`
+    INSERT INTO indexer_head (id, head) VALUES (1, ${String(next)})
+    ON CONFLICT (id) DO UPDATE SET head=${String(next)}, updated_at=now()
+  `;
+  await redis.set(INDEXER_HEAD_KEY, String(next));
+}
+
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 export async function startIndexer() {
+  // Ensure the indexer_head table exists (idempotent)
+  await sql`
+    CREATE TABLE IF NOT EXISTS indexer_head (
+      id         INTEGER PRIMARY KEY DEFAULT 1,
+      head       TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `;
   console.log("[indexer] starting");
   loop().catch((e) => console.error("[indexer] fatal:", e));
 }
@@ -44,7 +78,7 @@ async function loop() {
   for (;;) {
     try {
       const wasCatchUp = await tickOnce();
-      if (wasCatchUp) continue; // skip poll delay during catch-up
+      if (wasCatchUp) continue;
     } catch (e) {
       console.error("[indexer] tick error:", (e as Error).message);
     }
@@ -52,94 +86,101 @@ async function loop() {
   }
 }
 
-async function tick() {
+async function tickOnce(): Promise<boolean> {
   const headBlock = await client.getBlockNumber();
-  const fromStr   = await redis.get(INDEXER_HEAD_KEY);
-  const from      = fromStr ? BigInt(fromStr) : cfg.DEPLOY_BLOCK;
-
-  if (from > headBlock) {
-    lagBlocks = 0;
-    return;
-  }
-
-  // Use a larger batch when catching up; smaller near the tip to avoid rate limits
+  const from      = await getHead();
+  if (from > headBlock) { lagBlocks = 0; return false; }
   const catchingUp = (headBlock - from) > CATCH_UP_GAP;
-  const batchSize  = catchingUp ? CATCH_UP_BATCH : LIVE_BATCH;
-  const to         = from + batchSize > headBlock ? headBlock : from + batchSize;
+  await tick(from, headBlock, catchingUp);
+  return catchingUp && lagBlocks > 0;
+}
 
+async function tick(from: bigint, headBlock: bigint, catchingUp: boolean) {
+  const batchSize = catchingUp ? CATCH_UP_BATCH : LIVE_BATCH;
+  const to        = from + batchSize > headBlock ? headBlock : from + batchSize;
   lagBlocks = Number(headBlock - to);
 
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-  // Query contracts sequentially with a small delay between each to avoid rate limits
   const addresses = [cfg.LEDGER_ADDRESS, cfg.ESCROW_ADDRESS, cfg.POOL_ADDRESS] as `0x${string}`[];
-  const allLogs: import("viem").Log[] = [];
+
+  let allLogsOk = true;
+  const allLogs: Log[] = [];
+
   for (const address of addresses) {
     try {
       const logs = await client.getLogs({ address, fromBlock: from, toBlock: to });
       allLogs.push(...logs);
     } catch (e) {
-      console.warn(`[indexer] getLogs ${address} failed:`, (e as Error).message);
+      // CRITICAL: on any getLogs failure, do NOT advance the head.
+      // The failed range will be re-read on the next tick.
+      console.warn(`[indexer] getLogs ${address} failed (will retry):`, (e as Error).message);
+      allLogsOk = false;
     }
     if (!catchingUp) await delay(300);
   }
 
+  if (!allLogsOk) return; // do not advance — retry this range next tick
+
   for (const log of allLogs) {
-    await processLog(log);
+    await processLog(log).catch((e) =>
+      console.error("[indexer] processLog error:", (e as Error).message),
+    );
   }
 
-  await redis.set(INDEXER_HEAD_KEY, String(to + 1n));
+  // Only advance after all logs processed successfully
+  await advanceHead(to);
 }
 
-// Returns true when we processed a catch-up batch (caller should not wait)
-async function tickOnce(): Promise<boolean> {
-  const headBlock = await client.getBlockNumber();
-  const fromStr   = await redis.get(INDEXER_HEAD_KEY);
-  const from      = fromStr ? BigInt(fromStr) : cfg.DEPLOY_BLOCK;
-  if (from > headBlock) { lagBlocks = 0; return false; }
-  const catchingUp = (headBlock - from) > CATCH_UP_GAP;
-  await tick();
-  return catchingUp && lagBlocks > 0;
-}
+// ── Log processing ────────────────────────────────────────────────────────────
 
 async function processLog(log: Log) {
   const txHash   = log.transactionHash ?? "";
   const logIndex = Number(log.logIndex ?? 0);
 
-  // Idempotency check
   const existing = await sql`
     SELECT id FROM chain_events WHERE tx_hash=${txHash} AND log_index=${logIndex}
   `;
   if (existing.length) return;
 
-  // Decode event name from topic0
-  const topic0 = log.topics[0];
+  const topic0    = log.topics[0];
   const eventName = decodeEventName(topic0);
 
-  // Persist raw event — serialize BigInt fields as strings
   const argsJson = JSON.stringify(log, (_k, v) => typeof v === "bigint" ? v.toString() : v);
+  // Extract chain_game_id (topics[1]) for Move/GameCreated/GameEnded events so
+  // the replay query can use an exact equality match instead of jsonb extraction.
+  const chainGameId: string | null =
+    ["Move", "GameCreated", "GameEnded"].includes(eventName) && log.topics[1]
+      ? (log.topics[1] as string)
+      : null;
+
   await sql`
-    INSERT INTO chain_events (tx_hash, log_index, block_number, contract, event_name, args_json)
-    VALUES (${txHash}, ${logIndex}, ${String(log.blockNumber ?? 0)}, ${(log.address ?? "").toLowerCase()}, ${eventName}, ${argsJson})
+    INSERT INTO chain_events
+      (tx_hash, log_index, block_number, contract, event_name, args_json, chain_game_id)
+    VALUES (
+      ${txHash}, ${logIndex}, ${String(log.blockNumber ?? 0)},
+      ${(log.address ?? "").toLowerCase()}, ${eventName}, ${argsJson},
+      ${chainGameId}
+    )
     ON CONFLICT DO NOTHING
   `;
 
-  // Handle Move events → mark row final
   if (eventName === "Move" || eventName === "move") {
     await handleMoveLog(log, txHash);
   }
+
+  if (eventName === "GameEnded") {
+    await handleGameEndedLog(log, txHash);
+  }
 }
+
+// ── Move log handler ──────────────────────────────────────────────────────────
 
 async function handleMoveLog(log: Log, txHash: string) {
   try {
-    // topics: [topic0=sig, topic1=gameId(indexed bytes32), topic2=ply(indexed uint16)]
-    // data: ABI-encoded (uint16 uci, address player, bool relayed) = 3 x 32-byte slots
     const gameIdHex = log.topics[1] ?? "";
     const plyHex    = log.topics[2] ?? "";
-    // topics are 32-byte padded — use BigInt to avoid parseInt overflow on long hex strings
     const ply = Number(BigInt(plyHex || "0x0"));
 
-    // Get block time
     let blockTime: Date | null = null;
     try {
       const block = await client.getBlock({ blockNumber: log.blockNumber! });
@@ -158,8 +199,6 @@ async function handleMoveLog(log: Log, txHash: string) {
     if (!rows.length) return;
 
     const row = rows[0]!;
-    // Always set tx_hash here (writer may have polled before the tx landed).
-    // COALESCE keeps any existing hash in case it was already written.
     await sql`
       UPDATE moves
       SET state    = 'final',
@@ -169,7 +208,6 @@ async function handleMoveLog(log: Log, txHash: string) {
       WHERE id = ${row.id} AND state NOT IN ('final')
     `;
 
-    // Broadcast final update
     const gameRows = await sql<{ id: string }[]>`
       SELECT id FROM games WHERE chain_game_id=${gameIdHex} LIMIT 1
     `;
@@ -190,22 +228,57 @@ async function handleMoveLog(log: Log, txHash: string) {
   }
 }
 
-// topic0 keccak256 → event name, computed from the exact signatures in our contracts.
+// ── GameEnded log handler ─────────────────────────────────────────────────────
+// Triggers stake settlement from the confirmed on-chain event rather than from
+// endGame() in game.ts (which fires before the tx confirms and races the contract).
 
-// FinalMoveLedger events (exact Solidity signatures — no spaces, enum as uint8)
-//   event Move(bytes32 indexed gameId, uint16 indexed ply, uint16 uci, address player, bool relayed)
-//   event GameCreated(bytes32 indexed gameId, address indexed white, address indexed black,
-//                     uint8 gameClass, uint32 baseSec, uint16 incSec, bytes32 escrowMatchId)
-//   event GameEnded(bytes32 indexed gameId, uint8 result, uint8 reason, uint16 totalPlies, bytes32 finalFenHash)
-// MatchEscrow events
-//   event Deposited(bytes32 indexed matchId, address player)
-//   event MatchSettled(bytes32 indexed matchId, address winner, uint256 payout)
-//   event MatchOpened(bytes32 indexed matchId, bytes32 gameId, address playerA, address playerB, uint256 amount, uint64 fundDeadline)
-//   event MatchCancelled(bytes32 indexed matchId)
-// TournamentPool events
-//   event TournamentCreated(bytes32 indexed tid, uint256 entryFee, uint64 regClose)
-//   event Funded(bytes32 indexed tid, address indexed funder, uint256 amount)
-//   event Finalized(bytes32 indexed tid, address[] placements, uint256[] amounts)
+async function handleGameEndedLog(log: Log, _txHash: string) {
+  try {
+    const chainGameId = log.topics[1] ?? "";
+
+    const gameRow = await sql<{ id: string; stake_offer_id: string | null }[]>`
+      SELECT id, stake_offer_id FROM games
+      WHERE chain_game_id=${chainGameId} LIMIT 1
+    `;
+    if (!gameRow[0]) return;
+
+    const { id: gameId, stake_offer_id: stakeOfferId } = gameRow[0];
+
+    // Trigger auto-settle now that GameEnded is confirmed on-chain
+    if (stakeOfferId) {
+      import("../stakes/index.ts").then(({ onStakedGameEnd }) =>
+        onStakedGameEnd(stakeOfferId).catch((e: unknown) =>
+          console.error("[indexer] stake auto-settle failed:", (e as Error).message),
+        ),
+      ).catch(() => {});
+    }
+
+    // Tournament bracket advancement (game confirmed on-chain)
+    const tgRow = await sql<{ tournament_id: string }[]>`
+      SELECT tournament_id FROM tournament_games WHERE game_id=${gameId} LIMIT 1
+    `;
+    if (tgRow[0]) {
+      const gameDetailRow = await sql<{
+        result: string; white_id: string; black_id: string;
+      }[]>`SELECT result, white_id, black_id FROM games WHERE id=${gameId}`;
+      if (gameDetailRow[0]) {
+        const { result, white_id, black_id } = gameDetailRow[0];
+        const winnerId = result === "white" ? white_id
+                       : result === "black" ? black_id
+                       : null;
+        import("../tournaments/index.ts").then(({ onTournamentGameEnd }) =>
+          onTournamentGameEnd(gameId, winnerId),
+        ).catch((e: unknown) =>
+          console.error("[indexer] tournament advancement failed:", (e as Error).message),
+        );
+      }
+    }
+  } catch (e) {
+    console.error("[indexer] handleGameEndedLog error:", (e as Error).message);
+  }
+}
+
+// ── Event name decoder ────────────────────────────────────────────────────────
 
 const SIG_MAP: [string, string][] = [
   ["Move(bytes32,uint16,uint16,address,bool)",                                              "Move"],

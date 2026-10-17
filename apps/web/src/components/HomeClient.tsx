@@ -1,6 +1,7 @@
 "use client";
 import type React from "react";
 import { useState } from "react";
+import Link from "next/link";
 import type { Session } from "next-auth";
 import { signIn, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
@@ -243,13 +244,13 @@ export function HomeClient({ session }: Props): React.JSX.Element {
         </div>
 
         <div className="flex items-center gap-4 animate-fade-up delay-400">
-          <a href="/leaderboard" className="text-sm font-bold hover:underline" style={{ color: "rgb(var(--teal))" }}>
+          <Link href="/leaderboard" className="text-sm font-bold hover:underline" style={{ color: "rgb(var(--teal))" }}>
             Leaderboard →
-          </a>
+          </Link>
           <span style={{ color: "rgb(var(--ink-3))" }}>·</span>
-          <a href="/about" className="text-xs font-semibold hover:underline" style={{ color: "rgb(var(--ink-3))" }}>
+          <Link href="/about" className="text-xs font-semibold hover:underline" style={{ color: "rgb(var(--ink-3))" }}>
             About &amp; fair play
-          </a>
+          </Link>
         </div>
 
         {!session?.user && (

@@ -1,8 +1,41 @@
-# Final Move — Testnet QA / Launch Checklist
+# Final Move — Testnet Launch Checklist
 
-Complete every item on this list before approving mainnet deployment.
+Complete every item on this list before a public testnet launch.
 Check each box as you go. If any item fails, fix it and re-check from that
 section.
+
+**QA status:** Round 3 complete (see AGENTS.md for per-item proof). Mainnet is on hold.
+
+---
+
+## Deployment topologies
+
+See `docs/local-run.md` for full details.
+
+**Topology A (single origin / reverse proxy) — recommended for production:**
+- One domain. Reverse proxy routes `/v1/*`, `/ws`, `/mcp/*`, `/health` to the API
+  server; everything else to Next.js.
+- `NEXT_PUBLIC_API_ORIGIN` and `NEXT_PUBLIC_WS_URL` must be empty/unset.
+- `API_ORIGIN` (server-side only) must point to the API server's internal address.
+
+**Topology B (separate origin):**
+- API server on its own domain (e.g. `api.finalmove.io`).
+- Set `NEXT_PUBLIC_API_ORIGIN=https://api.finalmove.io` and
+  `NEXT_PUBLIC_WS_URL=wss://api.finalmove.io`.
+- API server must allow CORS from the web app's origin.
+
+**Required env vars for a public testnet deploy:**
+`CIRCLE_API_KEY`, `ENTITY_SECRET`, `ARC_RPC_URL`, `USDC_ADDRESS`, `LEDGER_ADDRESS`,
+`ESCROW_ADDRESS`, `POOL_ADDRESS`, `REFEREE_WALLET_ID`, `TREASURY_WALLET_ID`,
+`BOT_WALLET_IDS`, `DATABASE_URL`, `REDIS_URL`, `SESSION_SECRET`, `AUTH_SECRET`,
+`API_ORIGIN`, `PUBLIC_WEB_URL`.
+
+**Blocking for public testnet launch:**
+- [ ] `X_CLIENT_ID` / `X_CLIENT_SECRET` set in `apps/web/.env.local`
+      (Sign in with X is currently non-functional without these)
+- [ ] Referee wallet and bot wallets funded with testnet USDC for gas
+- [ ] Database migration run: `bun run migrate` (applies migrations 001–008)
+- [ ] E2E smoke passes: `bun run smoke:e2e`
 
 ---
 

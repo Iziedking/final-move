@@ -64,23 +64,97 @@ import {
 
 const app = new Hono();
 
-// ── CORS (allow web app on any localhost port + PUBLIC_WEB_URL) ───────────────
+// ── CORS — exact allowlist (no substring match) ───────────────────────────────
+// SECURITY: origin.includes("localhost") previously matched "localhost.evil.com".
+// Now only exact matches are allowed.
+const allowedOrigins = new Set<string>(
+  [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    "http://127.0.0.1:5173",
+    cfg.PUBLIC_WEB_URL,
+  ].filter(Boolean),
+);
 
 app.use("*", cors({
-  origin: (origin) => {
-    if (!origin) return "*";
-    if (origin.includes("localhost") || origin.includes("127.0.0.1")) return origin;
-    if (cfg.PUBLIC_WEB_URL && origin === cfg.PUBLIC_WEB_URL) return origin;
+  origin: (origin): string | null => {
+    if (!origin) return null;
+    if (allowedOrigins.has(origin)) return origin;
     return null;
   },
   allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowHeaders: ["Content-Type", "Authorization"],
+  allowHeaders: ["Content-Type", "Authorization", "X-Internal-Secret"],
+  credentials: true,
 }));
 
+// ── Body size cap (~64 KB for JSON routes) ────────────────────────────────────
+app.use("*", async (c, next): Promise<Response | void> => {
+  const cl = parseInt(c.req.header("content-length") ?? "0");
+  if (cl > 65_536) return c.json({ error: "payload_too_large" }, 413);
+  await next();
+});
+
+// ── Rate limiting (per-IP: 120 req/60s; per-identity: 60 req/60s) ─────────────
+app.use("*", ipRateLimit());
+
+import { requirePlayer, requireAdmin, requireInternal } from "./auth/middleware.ts";
+import { mintToken, verifyToken, tokenFromHeader } from "./auth/tokens.ts";
+import { ipRateLimit } from "./util/rate.ts";
+
+// ── Session token endpoint ─────────────────────────────────────────────────────
+// GET /v1/session — returns (or refreshes) a short-lived signed player token.
+// The Next.js web app calls this after NextAuth resolves the session and sends
+// the result as X-Internal-Secret to prove it is a trusted server-to-server call.
+// Guests (no session) get a server-issued guest token with a server-chosen id.
+
+app.post("/v1/session", async (c) => {
+  // Accepts two modes:
+  //   1. Internal (web server → API server): X-Internal-Secret header + body { userId, handle, avatar }
+  //   2. Guest: no secret, no body → issues a guest token
+  const internalSecret = c.req.header("X-Internal-Secret");
+  const isInternal = cfg.INTERNAL_SECRET
+    ? internalSecret === cfg.INTERNAL_SECRET
+    : false;
+
+  if (isInternal) {
+    const body = await c.req.json().catch(() => ({})) as {
+      userId?: string; handle?: string; avatar?: string;
+    };
+    if (!body.userId) return c.json({ error: "userId required" }, 400);
+    const token = mintToken(body.userId, "user", 3600);
+    return c.json({ token, playerId: body.userId, type: "user" });
+  }
+
+  // Guest path — generate a stable guest id from cookie or create a new one
+  const existingToken = tokenFromHeader(c.req.header("Authorization") ?? "");
+  if (existingToken) {
+    const existing = verifyToken(existingToken);
+    if (existing?.type === "guest") {
+      // Refresh the guest token (extend TTL)
+      const refreshed = mintToken(existing.sub, "guest", 7200);
+      return c.json({ token: refreshed, playerId: existing.sub, type: "guest" });
+    }
+  }
+
+  // Brand new guest
+  const guestId = "guest_" + Buffer.from(crypto.getRandomValues(new Uint8Array(8))).toString("hex");
+  const token = mintToken(guestId, "guest", 7200);
+  return c.json({ token, playerId: guestId, type: "guest" });
+});
+
 // ── Health ─────────────────────────────────────────────────────────────────────
+// Public: liveness only (ok, lag). Treasury/top-up detail requires admin token.
 
 app.get("/health", async (c) => {
   const h = await getHealth();
+  const isAdmin = (c.req.header("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim() === cfg.ADMIN_TOKEN && !!cfg.ADMIN_TOKEN;
+  if (!isAdmin) {
+    // Public liveness — strip sensitive detail
+    return c.json({ ok: h.ok, lag: (h as Record<string, unknown>).lag }, h.ok ? 200 : 503);
+  }
   return c.json(h, h.ok ? 200 : 503);
 });
 
@@ -110,13 +184,18 @@ app.get("/v1/games/:id", (c) => {
 
 /** POST /v1/games — create a game vs a house bot */
 app.post("/v1/games", async (c) => {
+  // Identity from token (guest token is ok — playerId derived from it)
+  const caller = requirePlayer(c); if (!caller) return c.res;
   const body = await c.req.json() as {
     opponentId:    string;   // e.g. "bot_1"
     timeControl:   string;   // "3+2" | "5+3" | "10+5"
-    playerId:      string;   // user's id (or "guest")
     playerHandle:  string;
     playerAvatar?: string;
   };
+  // Validate time control
+  const validTcs = ["3+2", "5+3", "10+5"];
+  if (!validTcs.includes(body.timeControl))
+    return c.json({ error: "invalid_time_control" }, 400);
 
   await loadBots(); // ensure cache populated (no-op after first call)
   const bot = getBot(body.opponentId);
@@ -128,16 +207,17 @@ app.post("/v1/games", async (c) => {
   const baseSec  = (parseInt(tcParts[0] ?? "3", 10)) * 60;
   const incSec   = parseInt(tcParts[1] ?? "2", 10);
 
+  const playerId = caller.sub; // always token-derived
+  const isGuest  = caller.type === "guest";
+
   // Look up player wallet
-  // Accept both legacy "guest" and the new stable per-browser "guest_*" ids
-  const isGuest = !body.playerId || body.playerId === "guest" || body.playerId.startsWith("guest_");
   let playerAddr   = "";
   let playerWallet = "";
 
   if (!isGuest) {
     const rows = await sql<{ address: string; circle_wallet_id: string }[]>`
       SELECT address, circle_wallet_id FROM wallets
-      WHERE owner_type='user' AND owner_id=${body.playerId}
+      WHERE owner_type='user' AND owner_id=${playerId}
       LIMIT 1
     `;
     playerAddr   = rows[0]?.address           ?? "";
@@ -146,7 +226,7 @@ app.post("/v1/games", async (c) => {
 
   if (!playerAddr) {
     // Guest or no wallet yet — referee relays their moves on-chain
-    playerAddr   = cfg.REFEREE_WALLET_ADDRESS ?? bot.address; // fallback to bot addr for fen display only
+    playerAddr   = cfg.REFEREE_WALLET_ADDRESS ?? bot.address;
     playerWallet = cfg.REFEREE_WALLET_ID;
   }
 
@@ -154,17 +234,15 @@ app.post("/v1/games", async (c) => {
   const playerColor: "w" | "b" = Math.random() < 0.5 ? "w" : "b";
   const isWhite = playerColor === "w";
 
-  // Derive kinds from actual colour so ratings are stored correctly regardless
-  // of which colour the human drew.
-  const humanKind = isGuest ? "user" as const : "user" as const;
+  const humanKind = "user" as const;
   const botKind   = "bot" as const;
 
   const game = await createGame({
-    whiteId:       isWhite ? body.playerId  : bot.id,
-    whiteKind:     isWhite ? humanKind      : botKind,
+    whiteId:       isWhite ? playerId  : bot.id,
+    whiteKind:     isWhite ? humanKind : botKind,
     whiteAddr:     isWhite ? playerAddr     : bot.address,
     whiteWalletId: isWhite ? playerWallet   : bot.walletId,
-    blackId:       isWhite ? bot.id         : body.playerId,
+    blackId:       isWhite ? bot.id         : playerId,
     blackKind:     isWhite ? botKind        : humanKind,
     blackAddr:     isWhite ? bot.address    : playerAddr,
     blackWalletId: isWhite ? bot.walletId   : playerWallet,
@@ -183,14 +261,15 @@ app.post("/v1/games", async (c) => {
 
   return c.json({
     gameId:      game.id,
-    playerId:    body.playerId,
+    playerId,
     color:       playerColor,
     chainGameId: game.chainGameId,
   });
 });
 
-/** POST /v1/games/bot-vs-bot — create a bot vs bot game (for testing/watching) */
+/** POST /v1/games/bot-vs-bot — admin only */
 app.post("/v1/games/bot-vs-bot", async (c) => {
+  if (!requireAdmin(c)) return c.res;
   const body = await c.req.json() as {
     whiteId: string; blackId: string; timeControl: string;
   };
@@ -220,17 +299,27 @@ app.post("/v1/games/bot-vs-bot", async (c) => {
 
 /** POST /v1/games/:id/move — REST move (fallback; WS preferred) */
 app.post("/v1/games/:id/move", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
   const id   = c.req.param("id");
-  const body = await c.req.json() as { uci: string; playerId: string };
-  const result = await handleMove(id, body.playerId, body.uci);
+  const body = await c.req.json() as { uci: string };
+  // Verify caller is a player in this game
+  const game = getLiveGame(id);
+  if (!game) return c.json({ error: "not_found" }, 404);
+  if (caller.sub !== game.whiteId && caller.sub !== game.blackId)
+    return c.json({ error: "not_a_player" }, 403);
+  const result = await handleMove(id, caller.sub, body.uci);
   return c.json(result, result.ok ? 200 : 400);
 });
 
 /** POST /v1/games/:id/resign */
 app.post("/v1/games/:id/resign", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
   const id   = c.req.param("id");
-  const body = await c.req.json() as { playerId: string };
-  const ok   = await handleResign(id, body.playerId);
+  const game = getLiveGame(id);
+  if (!game) return c.json({ error: "not_found" }, 404);
+  if (caller.sub !== game.whiteId && caller.sub !== game.blackId)
+    return c.json({ error: "not_a_player" }, 403);
+  const ok   = await handleResign(id, caller.sub);
   return c.json({ ok }, ok ? 200 : 400);
 });
 
@@ -258,38 +347,81 @@ app.get("/v1/leaderboard", async (c) => {
  * OR the server pushes a WS "matched" message.
  */
 app.post("/v1/matchmaking/queue", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
   const body = await c.req.json() as {
-    playerId:    string;
     handle:      string;
     avatarUrl?:  string;
     gameClass:   GameClass;
     timeControl: TimeControl;
   };
+  const playerId = caller.sub;
 
-  const ticketId = `ticket_${body.playerId}_${Date.now()}`;
+  // Validate time control
+  const validTcs: TimeControl[] = ["3+2", "5+3", "10+5"];
+  if (!validTcs.includes(body.timeControl as TimeControl))
+    return c.json({ error: "invalid_time_control" }, 400);
 
-  // Store a pending promise keyed by ticketId in Redis
-  const ratingVal = await getRating(body.playerId, body.gameClass, body.timeControl);
+  // Resolve caller's wallet + address
+  const walletRow = await sql<{ circle_wallet_id: string; address: string }[]>`
+    SELECT circle_wallet_id, address FROM wallets
+    WHERE owner_type='user' AND owner_id=${playerId} LIMIT 1
+  `;
+  if (!walletRow[0]) return c.json({ error: "no_wallet" }, 400);
+  const { circle_wallet_id: walletId, address } = walletRow[0];
+
+  const ticketId = `ticket_${playerId}_${Date.now()}`;
+  const ratingVal = await getRating(playerId, body.gameClass, body.timeControl);
 
   const entry: QueueEntry = {
-    playerId:    body.playerId,
+    playerId,
     handle:      body.handle,
     avatarUrl:   body.avatarUrl,
     gameClass:   body.gameClass,
     timeControl: body.timeControl,
     rating:      ratingVal,
     enqueuedAt:  Date.now(),
-    resolve:     async (matchedId) => {
-      if (matchedId) {
-        await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "matched", opponentId: matchedId }), "EX", 60);
-      } else {
+    walletId,
+    address,
+    kind:        "user",
+    resolve: async (opponent) => {
+      if (!opponent) {
+        // No match — indicate bot fallback available
         await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "no_match" }), "EX", 60);
+        return;
+      }
+      // Both sides present — create the game (white = lower ticketId alphabetically for determinism)
+      const [white, black] = playerId < opponent.playerId ? [entry, opponent] : [opponent, entry];
+      try {
+        const [baseSec, incSec] = body.timeControl.split("+").map(Number).map((n, i) => i === 0 ? n * 60 : n);
+        const game = await createGame({
+          whiteId: white.playerId, whiteKind: white.kind,
+          whiteAddr: white.address, whiteWalletId: white.walletId,
+          blackId: black.playerId, blackKind: black.kind,
+          blackAddr: black.address, blackWalletId: black.walletId,
+          gameClass: body.gameClass,
+          baseSec: baseSec!, incSec: incSec!,
+          timeControl: body.timeControl,
+        });
+        startWorker(white.walletId);
+        startWorker(black.walletId);
+        await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "matched", gameId: game.id, opponentId: opponent.playerId }), "EX", 120);
+        // Also notify the opponent's ticket if we can find it
+        const oppTicketKey = `mm:ticket:${opponent.playerId}`;
+        const oppTicketId = await redis.get(oppTicketKey);
+        if (oppTicketId) {
+          await redis.set(`mm:${oppTicketId}`, JSON.stringify({ status: "matched", gameId: game.id, opponentId: playerId }), "EX", 120);
+        }
+      } catch (e) {
+        console.error("[matchmaking] createGame failed:", (e as Error).message);
+        await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "error" }), "EX", 60);
       }
     },
   };
 
+  // Store ticketId keyed by playerId so the opponent's resolve can find it
+  await redis.set(`mm:ticket:${playerId}`, ticketId, "EX", 120);
   enqueue(entry);
-  await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "queued" }), "EX", 60);
+  await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "queued" }), "EX", 120);
   return c.json({ ticketId });
 });
 
@@ -329,23 +461,23 @@ app.get("/v1/challenges/:code", async (c) => {
 
 /** POST /v1/games/:id/draw-offer — offer or accept a draw */
 app.post("/v1/games/:id/draw-offer", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
   const gameId = c.req.param("id");
-  const body   = await c.req.json() as { playerId: string };
   const game   = getLiveGame(gameId);
   if (!game || game.status !== "live") return c.json({ error: "game_not_live" }, 400);
+  if (caller.sub !== game.whiteId && caller.sub !== game.blackId)
+    return c.json({ error: "not_a_player" }, 403);
 
   const key = `draw_offer:${gameId}`;
   const existing = await redis.get(key);
 
   if (!existing) {
-    // First offer — set in Redis for 30s
-    await redis.set(key, body.playerId, "EX", 30);
-    roomBroadcast(gameId, { type: "draw_offered", gameId, byPlayerId: body.playerId });
+    await redis.set(key, caller.sub, "EX", 30);
+    roomBroadcast(gameId, { type: "draw_offered", gameId, byPlayerId: caller.sub });
     return c.json({ status: "offered" });
   }
 
-  const offeredBy = existing;
-  if (offeredBy === body.playerId) return c.json({ status: "already_offered" });
+  if (existing === caller.sub) return c.json({ status: "already_offered" });
 
   // Accept — both sides agreed
   await redis.del(key);
@@ -356,8 +488,9 @@ app.post("/v1/games/:id/draw-offer", async (c) => {
 
 /** POST /v1/games/:id/rematch — offer or accept a rematch */
 app.post("/v1/games/:id/rematch", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
   const origGameId = c.req.param("id");
-  const body = await c.req.json() as { playerId: string };
+  const body = { playerId: caller.sub };
 
   const origRow = await sql<{
     white_id: string; white_kind: string; white_address: string; white_wallet_id: string;
@@ -415,6 +548,18 @@ app.post("/v1/games/:id/rematch", async (c) => {
   startWorker(newGame.whiteWalletId);
   startWorker(newGame.blackWalletId);
 
+  // If either side is a bot, schedule the bot loop for the rematch
+  const botSideId = newGame.whiteKind === "bot" ? newGame.whiteId
+                  : newGame.blackKind === "bot" ? newGame.blackId
+                  : null;
+  if (botSideId) {
+    const bots = await loadBots();
+    const bot = bots.find((b) => b.id === botSideId);
+    if (bot) scheduleBotForGame(newGame, bot).catch((e: unknown) =>
+      console.error("[rematch] bot scheduling failed:", (e as Error).message),
+    );
+  }
+
   roomBroadcast(origGameId, { type: "rematch_created", gameId: origGameId, newGameId: newGame.id });
   return c.json({ status: "created", newGameId: newGame.id });
 });
@@ -450,9 +595,11 @@ app.get("/v1/watch", async (c) => {
 
 // ── Agent REST API ─────────────────────────────────────────────────────────────
 
-/** POST /v1/users/upsert — create or update a user (used by auth callback + smoke tests) */
+/** POST /v1/users/upsert — create or update a user (internal: web server → API server only) */
 app.post("/v1/users/upsert", async (c) => {
+  if (!requireInternal(c)) return c.res;
   const body = await c.req.json() as { id: string; handle: string; avatar?: string; xId?: string };
+  if (!body.id || !body.handle) return c.json({ error: "id and handle required" }, 400);
   await sql`
     INSERT INTO users (id, handle, avatar, x_id)
     VALUES (${body.id}, ${body.handle}, ${body.avatar ?? null}, ${body.xId ?? null})
@@ -461,13 +608,14 @@ app.post("/v1/users/upsert", async (c) => {
   return c.json({ ok: true });
 });
 
-/** POST /v1/agents — register an agent */
+/** POST /v1/agents — register an agent (requires signed-in session) */
 app.post("/v1/agents", async (c) => {
-  const body = await c.req.json() as {
-    ownerId: string; name: string; modelNote?: string;
-  };
+  const caller = requirePlayer(c); if (!caller) return c.res;
+  if (caller.type !== "user") return c.json({ error: "signed_in_user_required" }, 403);
+  const body = await c.req.json() as { name: string; modelNote?: string };
   try {
-    const result = await registerAgent(body);
+    // ownerId always comes from the verified token — never from the body
+    const result = await registerAgent({ ownerId: caller.sub, name: body.name, modelNote: body.modelNote });
     return c.json({
       agentId:       result.agent.id,
       name:          result.agent.name,
@@ -479,11 +627,10 @@ app.post("/v1/agents", async (c) => {
   }
 });
 
-/** GET /v1/agents?ownerId= — list an owner's agents */
+/** GET /v1/agents — list caller's own agents only */
 app.get("/v1/agents", async (c) => {
-  const ownerId = c.req.query("ownerId");
-  if (!ownerId) return c.json({ error: "ownerId required" }, 400);
-  const agents = await listAgents(ownerId);
+  const caller = requirePlayer(c); if (!caller) return c.res;
+  const agents = await listAgents(caller.sub);
   return c.json({ agents });
 });
 
@@ -521,36 +668,39 @@ app.post("/v1/agent/queue", async (c) => {
     timeControl: tc,
     rating,
     enqueuedAt:  Date.now(),
-    resolve: async (opponentId) => {
-      if (opponentId) {
-        await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "matched", opponentId }), "EX", 60);
-        // If a game was created via matchmaking, push game_start event
-        const agentGame = await sql<{ id: string; white_id: string; black_id: string }[]>`
-          SELECT id, white_id, black_id FROM games
-          WHERE (white_id=${agent.id} OR black_id=${agent.id})
-            AND status IN ('waiting','live')
-          ORDER BY created_at DESC LIMIT 1
-        `;
-        if (agentGame[0]) {
-          const g = agentGame[0];
-          const gc = getLiveGame(g.id);
-          const color: "w" | "b" = g.white_id === agent.id ? "w" : "b";
-          const oppId = color === "w" ? g.black_id : g.white_id;
-          await pushEvent(agent.id, {
-            type:        "game_start",
-            gameId:      g.id,
-            color,
-            opponent:    { name: oppId, kind: "human" },
-            timeControl: { baseSec: gc?.baseSec ?? 300, incSec: gc?.incSec ?? 3, label: "5+3" },
-          } satisfies ServerToAgent);
-        }
-      } else {
+    walletId:    wallet?.walletId ?? "",
+    address:     wallet?.address ?? "",
+    kind:        "agent",
+    resolve: async (opponent) => {
+      if (!opponent) {
         await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "no_match" }), "EX", 60);
+        return;
+      }
+      // Game is created by the first side's resolve (the human queue handler).
+      // Wait briefly then find the newly-created game for this agent.
+      await new Promise<void>((r) => setTimeout(r, 500));
+      const agentGame = await sql<{ id: string; white_id: string; black_id: string }[]>`
+        SELECT id, white_id, black_id FROM games
+        WHERE (white_id=${agent.id} OR black_id=${agent.id})
+          AND status IN ('waiting','live')
+        ORDER BY created_at DESC LIMIT 1
+      `;
+      await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "matched", opponentId: opponent.playerId }), "EX", 60);
+      if (agentGame[0]) {
+        const g = agentGame[0];
+        const gc = getLiveGame(g.id);
+        const color: "w" | "b" = g.white_id === agent.id ? "w" : "b";
+        await pushEvent(agent.id, {
+          type:        "game_start",
+          gameId:      g.id,
+          color,
+          opponent:    { name: opponent.playerId, kind: opponent.kind === "user" ? "human" : opponent.kind },
+          timeControl: { baseSec: gc?.baseSec ?? 300, incSec: gc?.incSec ?? 3, label: tc },
+        } satisfies ServerToAgent);
       }
     },
   };
 
-  // If matched immediately, create the game
   enqueue(entry);
   await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "queued" }), "EX", 60);
   return c.json({ ticketId, walletAddress: wallet?.address });
@@ -583,26 +733,35 @@ app.get("/v1/stakes/:id", async (c) => {
   });
 });
 
-/** POST /v1/stakes/:id/open — referee opens the match on-chain after game creation */
+/** POST /v1/stakes/:id/open — internal: referee opens the match on-chain after game creation */
 app.post("/v1/stakes/:id/open", async (c) => {
-  const body = await c.req.json() as {
-    gameId:          string;
-    chainGameId:     string;
-    whiteAddr:       string;
-    blackAddr:       string;
-    fundDeadlineSec: number;
-  };
+  if (!requireInternal(c)) return c.res;
+  // Addresses and chainGameId come from the game row, not the request body
   const offer = await getStakeOffer(c.req.param("id"));
   if (!offer) return c.json({ error: "not_found" }, 404);
+  if (!offer.gameId) return c.json({ error: "game_not_linked" }, 400);
+
+  // Fetch game row to get authoritative addresses
+  const gameRows = await sql<{
+    chain_game_id: string; white_address: string; black_address: string;
+    white_id: string; black_id: string;
+  }[]>`SELECT chain_game_id, white_address, black_address, white_id, black_id FROM games WHERE id=${offer.gameId} LIMIT 1`;
+  const gameRow = gameRows[0];
+  if (!gameRow) return c.json({ error: "game_not_found" }, 404);
+
+  // Verify ledger players match offer players (contract would revert, catch it early)
+  if (offer.whiteId !== gameRow.white_id || offer.blackId !== gameRow.black_id)
+    return c.json({ error: "player_mismatch" }, 400);
+
   try {
     const matchId = await openStakeOnChain({
       stakeOfferId:    c.req.param("id"),
-      gameId:          body.gameId,
-      chainGameId:     body.chainGameId,
-      whiteAddr:       body.whiteAddr,
-      blackAddr:       body.blackAddr,
+      gameId:          offer.gameId,
+      chainGameId:     gameRow.chain_game_id,
+      whiteAddr:       gameRow.white_address,
+      blackAddr:       gameRow.black_address,
       amountUsdc6:     offer.amountUsdc6,
-      fundDeadlineSec: body.fundDeadlineSec ?? 600,
+      fundDeadlineSec: 600,
     });
     return c.json({ matchId, status: "open" });
   } catch (e) {
@@ -610,14 +769,26 @@ app.post("/v1/stakes/:id/open", async (c) => {
   }
 });
 
-/** POST /v1/stakes/:id/deposit — player deposits their stake */
+// Max stake per player: 100 USDC (testnet safety cap)
+const MAX_STAKE_USDC6 = 100_000_000n;
+
+/** POST /v1/stakes/:id/deposit — authenticated player deposits their own stake */
 app.post("/v1/stakes/:id/deposit", async (c) => {
-  const body = await c.req.json() as { playerId: string };
+  const caller = requirePlayer(c); if (!caller) return c.res;
   const offer = await getStakeOffer(c.req.param("id"));
   if (!offer) return c.json({ error: "not_found" }, 404);
-  // Look up wallet first (informative error before status check)
+
+  // Only the white or black player of this offer may deposit
+  if (caller.sub !== offer.whiteId && caller.sub !== offer.blackId)
+    return c.json({ error: "not_a_player" }, 403);
+
+  // Enforce amount cap
+  if (offer.amountUsdc6 > MAX_STAKE_USDC6)
+    return c.json({ error: "stake_exceeds_cap" }, 400);
+
+  // Look up caller's wallet
   const walletRows = await sql<{ circle_wallet_id: string }[]>`
-    SELECT circle_wallet_id FROM wallets WHERE owner_type='user' AND owner_id=${body.playerId} LIMIT 1
+    SELECT circle_wallet_id FROM wallets WHERE owner_type='user' AND owner_id=${caller.sub} LIMIT 1
   `;
   const walletId = walletRows[0]?.circle_wallet_id;
   if (!walletId) return c.json({ error: "wallet_not_found" }, 404);
@@ -627,56 +798,63 @@ app.post("/v1/stakes/:id/deposit", async (c) => {
   try {
     await playerApproveAndDeposit({
       stakeOfferId:    c.req.param("id"),
-      playerId:        body.playerId,
+      playerId:        caller.sub,
       playerWalletId:  walletId,
       amountUsdc6:     offer.amountUsdc6,
     });
     const updated = await getStakeOffer(c.req.param("id"));
     return c.json({ status: updated?.status ?? "funded" });
   } catch (e) {
-    return c.json({ error: (e as Error).message }, 500);
+    // Never return raw Circle errors — strip internal detail
+    console.error("[stakes] deposit error:", (e as Error).message);
+    return c.json({ error: "deposit_failed" }, 500);
   }
 });
 
-/** POST /v1/stakes/:id/settle — settle after game ends (idempotent) */
+/** POST /v1/stakes/:id/settle — internal: settle after game ends (idempotent) */
 app.post("/v1/stakes/:id/settle", async (c) => {
+  if (!requireInternal(c)) return c.res;
   const offer = await getStakeOffer(c.req.param("id"));
   if (!offer) return c.json({ error: "not_found" }, 404);
   try {
     await settleMatch(c.req.param("id"));
     return c.json({ status: "settled" });
-  } catch (e) {
-    return c.json({ error: (e as Error).message }, 500);
+  } catch {
+    return c.json({ error: "settle_failed" }, 500);
   }
 });
 
-/** POST /v1/stakes/:id/cancel — cancel unfunded match after deadline */
+/** POST /v1/stakes/:id/cancel — internal/admin: cancel unfunded match after deadline */
 app.post("/v1/stakes/:id/cancel", async (c) => {
+  if (!requireInternal(c)) return c.res;
   const offer = await getStakeOffer(c.req.param("id"));
   if (!offer) return c.json({ error: "not_found" }, 404);
   try {
     await cancelUnfunded(c.req.param("id"));
     return c.json({ status: "cancelled" });
-  } catch (e) {
-    return c.json({ error: (e as Error).message }, 500);
+  } catch {
+    return c.json({ error: "cancel_failed" }, 500);
   }
 });
 
-/** POST /v1/stakes/:id/timeout-refund — refund both after 24h timeout */
+/** POST /v1/stakes/:id/timeout-refund — internal/admin: refund both after 24h timeout */
 app.post("/v1/stakes/:id/timeout-refund", async (c) => {
+  if (!requireInternal(c)) return c.res;
   const offer = await getStakeOffer(c.req.param("id"));
   if (!offer) return c.json({ error: "not_found" }, 404);
   try {
     await refundAfterTimeout(c.req.param("id"));
     return c.json({ status: "refunded" });
-  } catch (e) {
-    return c.json({ error: (e as Error).message }, 500);
+  } catch {
+    return c.json({ error: "refund_failed" }, 500);
   }
 });
 
-/** GET /v1/wallet/:userId — USDC balance + recent transfers */
+/** GET /v1/wallet/:userId — USDC balance + recent transfers (self only) */
 app.get("/v1/wallet/:userId", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
   const userId = c.req.param("userId");
+  if (caller.sub !== userId) return c.json({ error: "forbidden" }, 403);
   const walletRows = await sql<{ circle_wallet_id: string; address: string }[]>`
     SELECT circle_wallet_id, address FROM wallets WHERE owner_id=${userId} LIMIT 1
   `;
@@ -721,8 +899,9 @@ app.get("/v1/tournaments", async (c) => {
   return c.json({ tournaments: list.map(formatTournament) });
 });
 
-/** POST /v1/tournaments — create a tournament (referee/admin only in production) */
+/** POST /v1/tournaments — create a tournament (admin only) */
 app.post("/v1/tournaments", async (c) => {
+  if (!requireAdmin(c)) return c.res;
   const body = await c.req.json() as {
     name:        string;
     gameClass?:  "open" | "human";
@@ -769,14 +948,14 @@ app.get("/v1/tournaments/:id", async (c) => {
   });
 });
 
-/** POST /v1/tournaments/:id/register — enter the tournament */
+/** POST /v1/tournaments/:id/register — enter the tournament (self only) */
 app.post("/v1/tournaments/:id/register", async (c) => {
-  const body = await c.req.json() as { playerId: string; playerKind?: string };
+  const caller = requirePlayer(c); if (!caller) return c.res;
   try {
     await registerEntry({
       tournamentId: c.req.param("id"),
-      playerId:     body.playerId,
-      playerKind:   (body.playerKind ?? "user") as "user" | "agent" | "bot",
+      playerId:     caller.sub,       // always from token — never from body
+      playerKind:   (caller.type === "agent" ? "agent" : "user") as "user" | "agent" | "bot",
     });
     return c.json({ ok: true });
   } catch (e) {
@@ -784,8 +963,9 @@ app.post("/v1/tournaments/:id/register", async (c) => {
   }
 });
 
-/** POST /v1/tournaments/:id/start — close registration and start bracket */
+/** POST /v1/tournaments/:id/start — admin only */
 app.post("/v1/tournaments/:id/start", async (c) => {
+  if (!requireAdmin(c)) return c.res;
   try {
     await startTournament(c.req.param("id"));
 
@@ -799,8 +979,9 @@ app.post("/v1/tournaments/:id/start", async (c) => {
   }
 });
 
-/** POST /v1/tournaments/:id/finalize — force-finalize if bracket is complete */
+/** POST /v1/tournaments/:id/finalize — admin only */
 app.post("/v1/tournaments/:id/finalize", async (c) => {
+  if (!requireAdmin(c)) return c.res;
   try {
     const { forceFinalizeIfComplete } = await import("./tournaments/index.ts");
     const done = await forceFinalizeIfComplete(c.req.param("id"));
@@ -810,8 +991,9 @@ app.post("/v1/tournaments/:id/finalize", async (c) => {
   }
 });
 
-/** POST /v1/tournaments/:id/fund — treasury funds the prize pool */
+/** POST /v1/tournaments/:id/fund — admin only: treasury funds the prize pool */
 app.post("/v1/tournaments/:id/fund", async (c) => {
+  if (!requireAdmin(c)) return c.res;
   try {
     await fundTournament(c.req.param("id"));
     return c.json({ ok: true });
@@ -862,12 +1044,13 @@ app.get("/v1/games/:id/replay", async (c) => {
     submitted_at: Date | null; final_at: Date | null; relayed: boolean;
   }[]>`SELECT * FROM moves WHERE game_id=${id} ORDER BY ply`;
 
-  // Chain events for this game's chain_game_id
+  // Chain events for this game's chain_game_id — exact match via the dedicated
+  // indexed column (populated by migration 009 + indexer QA Round 4A).
   let chainEvents: { event_name: string; args_json: string; tx_hash: string; block_number: bigint }[] = [];
   if (game.chain_game_id) {
     chainEvents = await sql<{ event_name: string; args_json: string; tx_hash: string; block_number: bigint }[]>`
       SELECT event_name, args_json, tx_hash, block_number FROM chain_events
-      WHERE args_json LIKE ${"%" + game.chain_game_id.slice(0, 10) + "%"}
+      WHERE chain_game_id = ${game.chain_game_id}
       ORDER BY block_number, id
     `;
   }
@@ -1136,6 +1319,13 @@ const BOT_THINK_MIN_MS: Record<string, number> = {
 const BOT_THINK_JITTER_MS = 400; // up to +400ms random per move
 
 async function scheduleBot(gameId: string, botId: string, botColor: "w" | "b") {
+  // One loop per (gameId, botColor) pair — prevent duplicate loops from
+  // scheduleTournamentBots polling every 3 s.
+  const key = `${gameId}:${botColor}`;
+  const { scheduledBotGames } = await import("./referee/game.ts");
+  if (scheduledBotGames.has(key)) return;
+  scheduledBotGames.add(key);
+
   const { getBotMove } = await import("./bots/index.ts");
   const minThink = BOT_THINK_MIN_MS[botId] ?? 1_000;
 
@@ -1165,11 +1355,19 @@ async function scheduleBot(gameId: string, botId: string, botColor: "w" | "b") {
 
     if (!result.over) {
       setTimeout(play, 100); // tight poll — think delay happens at the top of the next call
+    } else {
+      scheduledBotGames.delete(key);
     }
   };
 
   // Small startup delay so the game row is committed before the first move
   setTimeout(play, 400);
+}
+
+/** Schedule a bot for a newly-created game where one side is a bot. */
+async function scheduleBotForGame(game: import("./referee/game.ts").LiveGame, bot: { id: string }) {
+  const botColor = game.whiteId === bot.id ? "w" : "b";
+  await scheduleBot(game.id, bot.id, botColor);
 }
 
 // ── Tournament bot auto-play ───────────────────────────────────────────────────
@@ -1201,6 +1399,8 @@ async function scheduleTournamentBots(tournamentId: string) {
   };
   setTimeout(poll, 1_000);
 }
+
+import { setMaps, rehydrateLiveGames } from "./referee/rehydrate.ts";
 
 // ── Node HTTP server ──────────────────────────────────────────────────────────
 
@@ -1252,6 +1452,8 @@ httpServer.on("upgrade", (req, socket, head) => {
 // gameId → Map<playerId, WebSocket>
 const gameRooms  = new Map<string, Map<string, WebSocket>>();
 const playerGame = new Map<string, string>();
+
+// Maps wired in main() after rehydration module is ready
 
 function roomBroadcast(gameId: string, msg: unknown) {
   const room = gameRooms.get(gameId);
@@ -1320,19 +1522,52 @@ async function buildFullGameState(gameId: string) {
   };
 }
 
+// WS payload cap (4 KB)
+const WS_MAX_PAYLOAD = 4_096;
+// Per-socket message rate limit: max 30 messages per 10 s
+const WS_RATE_WINDOW_MS  = 10_000;
+const WS_RATE_MAX_MSGS   = 30;
+
 wss.on("connection", (ws) => {
   let myPlayerId = "";
   let myGameId   = "";
+  let msgCount   = 0;
+  let rateWindowStart = Date.now();
 
   ws.on("message", async (raw) => {
+    // Payload cap
+    const payload = raw.toString();
+    if (Buffer.byteLength(payload) > WS_MAX_PAYLOAD) {
+      ws.send(JSON.stringify({ type: "error", reason: "payload_too_large" }));
+      return;
+    }
+
+    // Rate limit
+    const now = Date.now();
+    if (now - rateWindowStart > WS_RATE_WINDOW_MS) {
+      msgCount = 0;
+      rateWindowStart = now;
+    }
+    msgCount++;
+    if (msgCount > WS_RATE_MAX_MSGS) {
+      ws.send(JSON.stringify({ type: "error", reason: "rate_limited" }));
+      return;
+    }
+
     try {
-      const msg = JSON.parse(raw.toString()) as {
-        type: string; gameId?: string; playerId?: string; uci?: string;
+      const msg = JSON.parse(payload) as {
+        type: string; gameId?: string; token?: string; uci?: string;
       };
 
-      if (msg.type === "join" && msg.gameId && msg.playerId) {
+      if (msg.type === "join" && msg.gameId && msg.token) {
+        // Derive identity from the signed token — never trust a client-supplied playerId
+        const tokenPayload = verifyToken(msg.token);
+        if (!tokenPayload) {
+          ws.send(JSON.stringify({ type: "error", reason: "invalid_token" }));
+          return;
+        }
         myGameId   = msg.gameId;
-        myPlayerId = msg.playerId;
+        myPlayerId = tokenPayload.sub;
 
         if (!gameRooms.has(myGameId)) gameRooms.set(myGameId, new Map());
         gameRooms.get(myGameId)!.set(myPlayerId, ws);
@@ -1345,6 +1580,12 @@ wss.on("connection", (ws) => {
       }
 
       if (msg.type === "move" && msg.gameId && msg.uci && myPlayerId) {
+        // Verify caller is a player in this game
+        const liveGame = getLiveGame(msg.gameId);
+        if (liveGame && myPlayerId !== liveGame.whiteId && myPlayerId !== liveGame.blackId) {
+          ws.send(JSON.stringify({ type: "move_rejected", reason: "not_a_player" }));
+          return;
+        }
         const result = await handleMove(msg.gameId, myPlayerId, msg.uci);
         if (!result.ok && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "move_rejected", reason: result.reason }));
@@ -1482,9 +1723,13 @@ agentWss.on("connection", (ws, req) => {
           timeControl: tc,
           rating,
           enqueuedAt:  Date.now(),
-          resolve: async (opponentId) => {
-            if (!opponentId) return; // no match, agent can re-queue
-            // Look up the matched game
+          walletId:    wallet?.walletId ?? "",
+          address:     wallet?.address ?? "",
+          kind:        "agent",
+          resolve: async (opponent) => {
+            if (!opponent) return; // no match, agent can re-queue
+            // Game is created by the human side's resolve; wait briefly then find it
+            await new Promise<void>((r) => setTimeout(r, 500));
             const rows = await sql<{
               id: string; white_id: string; black_id: string;
               white_kind: string; black_kind: string; base_sec: number; inc_sec: number; time_control: string;
@@ -1498,15 +1743,13 @@ agentWss.on("connection", (ws, req) => {
             if (!rows[0]) return;
             const g = rows[0];
             const color: "w" | "b" = g.white_id === agentId ? "w" : "b";
-            const oppId = color === "w" ? g.black_id : g.white_id;
             send({
               type:        "game_start",
               gameId:      g.id,
               color,
-              opponent:    { name: oppId, kind: "human" },
+              opponent:    { name: opponent.playerId, kind: opponent.kind === "user" ? "human" : opponent.kind },
               timeControl: { baseSec: g.base_sec, incSec: g.inc_sec, label: g.time_control as TimeControl },
             });
-            // Push your_turn if it's our move
             const game = getLiveGame(g.id);
             if (game) sendYourTurn(g.id, agentId, color);
           },
@@ -1612,6 +1855,15 @@ async function main() {
   const { runMigrations } = await import("./db/migrate.ts");
   await runMigrations();
 
+  // Wire pruning hook before rehydration so map cleanup works on reloaded games
+  const { liveGames: lg, setPruneHook } = await import("./referee/game.ts");
+  const { pruneMaps: pruneFn } = await import("./referee/rehydrate.ts");
+  setPruneHook(pruneFn);
+  setMaps(lg as Map<string, import("./referee/game.ts").LiveGame>, gameRooms, playerGame);
+
+  // Rehydrate live/waiting games from DB before accepting connections
+  await rehydrateLiveGames().catch((e) => console.error("[rehydrate] failed:", (e as Error).message));
+
   startWorker(cfg.REFEREE_WALLET_ID);
 
   const bots = await loadBots();
@@ -1626,6 +1878,9 @@ async function main() {
     const head = await rpc.getBlockNumber().catch(() => 0n);
     const stored = await redis.get("indexer:head");
     if (!stored && head > 0n) {
+      // Also persist to Postgres so it survives Redis flush
+      await sql`INSERT INTO indexer_state (key, value) VALUES ('indexer_head', ${String(head - 50n)})
+                ON CONFLICT (key) DO UPDATE SET value=${String(head - 50n)}`;
       await redis.set("indexer:head", String(head - 50n));
       console.log(`[server] indexer head initialized to ${head - 50n}`);
     }
@@ -1637,6 +1892,21 @@ async function main() {
     console.log(`[server] ready on :${cfg.PORT}`);
   });
 }
+
+// ── Graceful shutdown (SIGTERM) ───────────────────────────────────────────────
+
+process.on("SIGTERM", () => {
+  console.log("[server] SIGTERM received — shutting down gracefully");
+  httpServer.close(() => {
+    console.log("[server] HTTP server closed");
+    // Let in-flight WS connections drain for up to 5 s
+    setTimeout(() => {
+      sql.end().catch(() => {}).finally(() => process.exit(0));
+    }, 5_000);
+  });
+  // Stop accepting new connections immediately
+  httpServer.closeAllConnections?.();
+});
 
 // ── Top-level error guards ─────────────────────────────────────────────────────
 // Log with context instead of silently crashing; compose restart: unless-stopped

@@ -190,7 +190,7 @@ export default function CupClient(): React.JSX.Element {
                 <h3 className="text-[11px] font-extrabold uppercase tracking-widest font-display mb-3" style={{ color: "rgb(var(--ink-3))" }}>Games</h3>
                 <div className="flex flex-col gap-1">
                   {selected.games.map((g) => (
-                    <a key={g.game_id} href={`/game/${g.game_id}`}
+                    <Link key={g.game_id} href={`/game/${g.game_id}`}
                       className="flex items-center justify-between rounded-2xl px-3 py-2 transition-colors hover:opacity-80"
                       style={{ background: "rgb(var(--cloud-2))" }}
                     >

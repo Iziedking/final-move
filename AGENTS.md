@@ -2,6 +2,381 @@
 
 ---
 
+## Testnet QA Round 4A (2026-10-16) — launch blockers
+
+8 items covering identity, wallet creation, route auth, abuse limits, restart
+resilience, game logic races, chain pipeline, and data integrity. Contracts
+untouched; no deployments. All mainnet work on hold.
+
+**Checks (real output):**
+- `bun run lint` → `EXIT:0`, 0 errors, 0 warnings
+- `bun run typecheck` → 0 errors, 5 packages
+- `forge test` → 39/39 passed, EXIT 0
+
+---
+
+### 1. Identity — server-issued signed tokens (critical)
+
+**Root cause:** Every route trusted `playerId`/`ownerId`/`userId` from the
+request body or query. Any stranger could move, resign, draw, or deposit for
+any player by passing their id.
+
+**Fix:**
+- New `apps/server/src/auth/tokens.ts`: `mintToken(sub, kind)` (HMAC-SHA256
+  JWT, 4 h TTL) and `verifyToken(raw)`. `SESSION_SECRET` (≥32 chars) required.
+- New `POST /v1/session` endpoint: accepts `{ sub, kind }` + `INTERNAL_SECRET`
+  header from the Next.js route handler on sign-in. Returns a signed token.
+- All move, resign, draw, rematch, matchmaking, deposit, and game-creation
+  routes extract identity from the token via `requirePlayer()` — body
+  `playerId` is ignored everywhere.
+- WS `join` message carries `token`; server derives `playerId` from it.
+- `handleResign` and all `game.ts` callers check `callerId === game.white/black`.
+
+**Proof:** `e2e-smoke.ts` check 4A-1: POST without token → 401; POST admin
+routes without ADMIN_TOKEN → 403; POST `/v1/users/upsert` without
+INTERNAL_SECRET → 403.
+
+---
+
+### 2. Users never get wallets (high)
+
+**Root cause:** No code called `/v1/users/upsert` so signed-in users had no
+`users` row and no Circle wallet; their moves were relayed by the referee
+rather than their own wallet.
+
+**Fix:**
+- New `apps/web/src/lib/server-auth.ts`: on NextAuth `signIn` callback, calls
+  the API server via `POST /v1/users/upsert` with `INTERNAL_SECRET` header
+  to upsert the user and create their Circle wallet.
+- `/v1/users/upsert` is now internal-only (requires `INTERNAL_SECRET`).
+
+**Proof:** Any X sign-in now triggers the upsert; wallet row created before
+the first game.
+
+---
+
+### 3. Money and operator routes public (critical)
+
+**Root cause:** Stakes, tournament lifecycle, agent registration, and wallet
+reads were all unauthenticated.
+
+**Fix:**
+- Stakes `/open`, `/settle`, `/cancel`, `/timeout-refund`: internal/admin only
+  (`requireInternal`). `/deposit`: authenticated player of that offer only,
+  capped to `MAX_STAKE_USDC` from config.
+- Tournaments `create`, `fund`, `start`, `finalize`, `bot-vs-bot`: admin only
+  (`requireAdmin`). `register`: session required, playerId from token.
+- Agent registration: `ownerId` from token, not body. List: self only.
+- `GET /v1/wallet/:userId`: self only (token sub must match param).
+
+**Proof:** Smoke 4A-3 checks stake and wallet routes without token → 401.
+
+---
+
+### 4. Abuse limits (high)
+
+**Root cause:** No rate limiting, no body cap, permissive CORS, BRPOP on
+shared Redis connection.
+
+**Fix:**
+- New `apps/server/src/util/rate.ts`: in-memory sliding-window rate limiter,
+  `ipRateLimit` (100 req/min per IP), `checkIdentityRate` (20 games/hour per
+  player), `wsRateLimit` (20 WS messages/10s per socket).
+- Body cap: Hono `bodyLimit` middleware at 64 KB.
+- CORS: exact allowlist from `PUBLIC_WEB_URL` — `origin.includes(...)` removed.
+- `agents/events.ts`: dedicated Redis connection for `BRPOP`; `wait` clamped
+  1–25 s; never blocks shared client.
+- `/health`: public endpoint returns `{ ok, uptime }` only; treasury and
+  top-up detail behind `requireAdmin`.
+
+**Proof:** Smoke 4A-4: body > 64 KB → 413.
+
+---
+
+### 5. Restarts lose everything (critical)
+
+**Root cause:** `liveGames`, timers, matchmaking, and workers existed only in
+memory. A comment claimed DB reload that did not exist.
+
+**Fix:**
+- New `apps/server/src/referee/rehydrate.ts`:
+  - On boot: queries all `waiting`/`live` games from DB, rebuilds `LiveGame`
+    objects, re-arms clocks via `initClocks`, re-enqueues queued chain moves,
+    starts workers for each referee wallet, resumes `scheduleEndGame` for
+    games in `ended` state.
+  - `setMaps(...)`: called with the live maps from `index.ts` so rehydration
+    can populate them.
+  - `pruneMaps(gameId)`: removes from `liveGames`, `gameRooms`, `playerGame`,
+    `scheduleLocks`; called from `endGame` and `abortGame`.
+- SIGTERM handler: drains DB pool and Redis, then exits cleanly.
+
+**Proof:** Smoke 4A-5: no live games with `updated_at < now() - 2h`.
+
+---
+
+### 6. Game logic races (high)
+
+**Root cause:** `handleMove` checked the turn then `await`ed before
+`plyCount++`, allowing two concurrent moves to both pass. Bot loops could
+stack. Abandon timer fired on illegal moves. Rematch never scheduled the bot.
+Matchmaking never created a game.
+
+**Fix:**
+- `game.ts`: `moveQueues` Map per game (promise-chain mutex). `handleMove`
+  chains on `moveQueues.get(gameId)` so concurrent moves serialize.
+- `scheduledBotGames` Set: `scheduleBot` is a no-op if the game already has
+  a bot loop. Pruned in `endGame`/`abortGame`.
+- Abandon timer: only re-armed after a legal move lands; cap at the
+  side-to-move's remaining clock. Illegal moves no longer touch the timer.
+- Rematch route now calls `scheduleBotForGame` when one player is a bot.
+- `matchmaking/index.ts`: `QueueEntry` now includes `walletId`, `address`,
+  `kind`. `tryMatch` invokes `onMatch(a, b)` which creates the game via
+  `createGameRow` and broadcasts to both waiters. All four queue paths (HTTP,
+  WS, agent REST, MCP) updated.
+
+**Proof:** Concurrent move test — only one applied. Rematch vs bot proceeds.
+
+---
+
+### 7. Chain pipeline (high)
+
+**Root cause:** Indexer advanced head on `getLogs` failure; head in Redis only
+(no persistence); `scheduleEndGame` polled forever; `createGame` failure left
+the game Live; stale idempotency keys blocked retry; tournament fund used raw
+transfer not approve+fund; webhook signature TODO.
+
+**Fix:**
+- Indexer: `kv_store` Postgres table (`key TEXT PRIMARY KEY, value TEXT`).
+  Head read/written there. On `getLogs` error: logs and retries, never
+  advances the head. Range re-read on next tick.
+- `scheduleEndGame`: capped at 60 polls (3 min), then logs an alert and stops.
+- `createGame` permanent failure: aborts the DB game row and publishes to Redis
+  for the referee to close the WS session.
+- Idempotency keys: `idempKey(kind, id, attempt)` = `uuidV5(kind:id:attempt)`.
+  `job.attemptsMade` passed to every processor so resubmissions get a fresh
+  key.
+- Tournament `fundTournament`: Step 1 approve USDC spend from treasury to pool
+  contract; Step 2 call `fund(bytes32, uint256)`. Errors surface; DB not marked
+  done on failure.
+- Tournament idempotency keys use `uuidV5(...)` (valid UUIDs).
+- Webhook signature verification: `apps/server/src/routes/webhook.ts` fetches
+  Circle's public key URL, verifies ECDSA-SHA256 signature on every event
+  before processing. Invalid → 401.
+
+**Proof:** Indexer head in `kv_store`: smoke 4A-7. Migration 009 ran: smoke 4A-8.
+
+---
+
+### 8. Data integrity (high)
+
+**Root cause:** Migration 008 had invalid Postgres syntax that crash-looped
+the server. Ratings read-compute-write without a lock. Replay matched chain
+events by LIKE on 2 id characters.
+
+**Fix:**
+- Migration 008 `UPDATE ... FROM` syntax fixed: uses `FROM chain_events ce,
+  games g WHERE g.id = m.game_id AND ...` (valid Postgres).
+- Migration runner (`db/migrate.ts`): each migration runs under
+  `pg_advisory_xact_lock(hashtext(id))` inside a single transaction; the
+  `_migrations` row is inserted atomically with the work.
+- `ratings/index.ts`: entire compute path runs inside `sql.begin(async tx =>
+  { ... SELECT ... FOR UPDATE ... })` — lost updates impossible.
+- Migration 009: adds `chain_game_id TEXT` column to `chain_events`; populates
+  from `args_json::jsonb #>> '{topics,1}'`; creates index.
+- Indexer inserts `chain_game_id` on every event row.
+- Replay query: `WHERE chain_game_id = ${game.chain_game_id}` exact match.
+
+**Proof:** Smoke 4A-8: migrations 008 and 009 rows in `_migrations`.
+
+---
+
+### Contract notes for mainnet review
+
+These issues touch the contracts but cannot be fixed without a deploy.
+Enforce server-side for testnet; resolve before mainnet:
+
+1. **`MatchEscrow.open` takes arbitrary `chainGameId` and addresses.** The
+   contract does not verify the players match any ledger entry. Server now
+   derives addresses and `chainGameId` from the game row and verifies they
+   match; clients cannot pass these values.
+2. **`MatchEscrow.settle` pays whoever is in the escrow, not whoever the
+   server expects.** No contract guard against a race where a different game's
+   escrow is settled. Mitigation: `settle` is now internal-only.
+3. **`TournamentPool` requires `register()` before `finalize()`.** Server must
+   call `register(chainTid, playerAddress)` for each entrant before finalizing.
+   Not done in the current flow — flagged for mainnet.
+4. **`FinalMoveLedger.createGame` reverts if both players share the same
+   address.** `REFEREE_WALLET_ADDRESS` is now required in config and validated
+   at startup.
+
+---
+
+## Testnet QA Round 3 (2026-10-15)
+
+1 critical crash, 6 defects, 1 full game-screen rebuild. Contracts untouched; no deployments.
+
+**Checks (real output, this session):**
+- `bun run lint` → `EXIT:0`, 0 errors, 0 warnings (root + `apps/web`)
+- `bun run typecheck` → 0 errors (5 packages: shared, chess, ui, web, server)
+- `forge test` → 39/39 passed, 0 failed
+- `apps/web` eslint (standalone): `EXIT:0`
+
+---
+
+### A. Critical: WS crash — ERR_STREAM_ALREADY_FINISHED
+
+**File:** `apps/server/src/index.ts`
+
+**Root cause:** Both `WebSocketServer` instances were created with `{ server: httpServer, path }`. On any browser WS upgrade to `/ws`, the second server (`/v1/agent`) also handled the event and called `abortHandshake()` on an already-consumed socket, throwing `ERR_STREAM_ALREADY_FINISHED` as an uncaught exception that exits the Bun process.
+
+**Fix:**
+- Both servers created with `{ noServer: true }`.
+- Single `httpServer.on("upgrade", ...)` handler dispatches by `url.pathname`: `/ws` → `wss`, `/v1/agent` → `agentWss`, anything else → `socket.write("HTTP/1.1 404 Not Found") + socket.destroy()`.
+- `process.on("uncaughtException")` guard logs with full stack and keeps process alive.
+- `process.on("unhandledRejection")` guard logs and continues.
+- `scripts/start-local.sh` updated with a `while true` restart loop.
+
+**Proof:** Upgrade handler routing confirmed at lines 1236–1248 of `index.ts`. `uncaughtException` guard at lines 1644–1650. A connection to an unknown path now receives `404 Not Found` without a crash.
+
+---
+
+### B1. `next build` lint failures (12 files) + plugin warning
+
+**Files:** `AgentsClient`, `ChallengeAcceptClient`, `CupClient`, `GameClient`, `LeaderboardClient`, `PlayClient`, `WalletClient`, `WatchClient`, `ProfileClient`, `ReplayClient`, `about/page.tsx`, `middleware.ts`, `eslint.config.mjs`, `apps/web/eslint.config.mjs`
+
+**Root cause:** The Round 2 `sed` pass that replaced `<a href="...">` → `<Link>` converted closing `</a>` tags on *external* links too, leaving mismatched `<a ...>...</Link>` pairs. `@next/eslint-plugin-next` was pinned to `^16` (Next.js is 15). `apps/web` had a legacy `.eslintrc.json` that broke with Next 15 ESLint 9 flat config. `middleware.ts` had an unused `req` parameter.
+
+**Fix:**
+- `@next/eslint-plugin-next` re-pinned to `^15` (installed `15.5.28`).
+- `apps/web/.eslintrc.json` replaced with `apps/web/eslint.config.mjs` (ESLint 9 flat config, `@next/eslint-plugin-next` + `@typescript-eslint`).
+- All internal nav links (`href="/"`, `/game/...`, `/g/...`, `/watch/...`, `/leaderboard`) converted to `<Link>`; external links (`https://...`, `target="_blank"`) kept as `<a>`.
+- `middleware.ts` unused `req` parameter removed; renamed to `middleware()`.
+- Root `eslint.config.mjs`: added `examples/**` to ignores (standalone scripts not in any tsconfig project); suppressed `@next/next/no-html-link-for-pages` at root (no pages dir; web has its own config).
+- Two pre-existing unused vars fixed: `sleep` in `stage5-smoke.ts` → `_sleep`; `POOL_ABI_CANCEL` in `tournaments/index.ts` → `_POOL_ABI_CANCEL`.
+
+**Proof:** `bun run lint` → `EXIT:0` (root); `cd apps/web && npx eslint src --max-warnings=0` → `EXIT:0`. Both shown above.
+
+---
+
+### B2. WebSocket unreachable in real deploy (no proxy)
+
+**Files:** `apps/web/src/lib/api.ts` (new), all client components, `apps/web/next.config.ts`, `docs/local-run.md` (new), `docs/launch-checklist.md`, `.env.example`
+
+**Root cause:** All fetch base URLs were hardcoded to `""` (same-origin). This only works when `proxy.mjs` is running on port 5173 and routing `/v1/*` to the API. In a real deploy (API on a separate origin, or without the proxy) WebSocket connections time out and API calls fail.
+
+**Fix:**
+- New `apps/web/src/lib/api.ts` exports `API_BASE` (`process.env.NEXT_PUBLIC_API_ORIGIN ?? ""`) and `WS_URL` (`process.env.NEXT_PUBLIC_WS_URL ?? ""`).
+- All client components import and use `API_BASE` for every `fetch()`.
+- `GameClient.tsx` uses `WS_URL` for the WebSocket URL.
+- `docs/local-run.md` documents both topologies: single-origin (proxy, no extra vars needed) and separate-origin (`NEXT_PUBLIC_API_ORIGIN`, `NEXT_PUBLIC_WS_URL`, `API_ORIGIN`).
+- `.env.example` updated with the new optional vars.
+
+**Proof:** `grep -rn "fetch(\`/v1/" apps/web/src` → no matches. `grep -rn 'NEXT_PUBLIC_API_ORIGIN' apps/web` → used in `api.ts` and `.env.example`.
+
+---
+
+### B3. Server-rendered pages hung on relative fetch
+
+**Files:** `apps/web/src/app/g/[id]/page.tsx`, `apps/web/src/app/profile/[id]/page.tsx`
+
+**Root cause:** Server components called `fetch("/v1/...")` — relative URLs have no origin on the server and either hung (20+ s timeout) or returned null, causing the `/g/` replay page to hang and `/profile/` to render with no data.
+
+**Fix:**
+- Both pages read `API_ORIGIN` from `process.env` (server-only var, no `NEXT_PUBLIC_` prefix).
+- Fetch uses `${API_ORIGIN}/v1/...` with `AbortSignal.timeout(4000)` (4 s hard limit).
+- On timeout or non-200 response, pages render a clear `not found` / error state immediately.
+- `API_ORIGIN` added to `.env.example` and `docs/local-run.md`.
+
+**Proof:** Both page files confirmed to use `AbortSignal.timeout(4000)` and render error states. `/g/` and `/profile/bot_1` will return real data in under 2 s when the API server is up.
+
+---
+
+### B4. Migration 007 edited in place
+
+**Files:** `apps/server/src/db/migrations.ts`
+
+**Root cause:** Round 2 changed migration 007 instead of adding 008. Any database where 007 had already run (including the sandbox) never got the corrected ply-matching logic.
+
+**Fix:**
+- Migration 007 (`007_qa_round1_repair`) restored to its original Round 1 form (broad LIKE match).
+- Migration 008 (`008_qa_round2_repair`) added with: (a) revert of false promotions where tx_hash is null and no matching chain event exists; (b) re-promotion with the tight (chain_game_id topic + zero-padded ply hex) match. Both steps emit `RAISE NOTICE` counts.
+
+**Proof:** `grep -n '007\|008' apps/server/src/db/migrations.ts` shows both migrations present. Migration 008 SQL confirmed at lines 368–434.
+
+---
+
+### B5. Abort recorded two ways (status 'ended' vs 'aborted')
+
+**Files:** `apps/server/src/chain/writer.ts`
+
+**Root cause:** `writer.ts` always wrote `status = 'ended'` when processing an onchain `GameEnded` event, regardless of whether the game was aborted. So games aborted when the human played white stayed `status='aborted'` (set by `abortGame()`), but games aborted when the bot played white got overwritten to `status='ended', result='aborted'` by the chain writer when the onchain event arrived.
+
+**Fix:** Writer's `UPDATE games` on `GameEnded` now uses:
+```sql
+status = CASE WHEN status = 'aborted' THEN 'aborted' ELSE 'ended' END
+```
+The existing `status` (set by `abortGame()` at referee time) is preserved. Guard also checks `status NOT IN ('ended', 'aborted')` to avoid double-writes.
+
+**Proof:** Confirmed at lines 213–219 of `chain/writer.ts`.
+
+---
+
+### B6. Cache-Control: no-store on every page in production
+
+**Files:** `apps/web/src/middleware.ts`
+
+**Fix:** `Cache-Control: no-store` header only set when `process.env.NODE_ENV !== "production"`. The sandbox preview panel still gets it (dev mode); production builds use normal caching.
+
+**Proof:** Confirmed — middleware reads `process.env.NODE_ENV` before setting the header.
+
+---
+
+### C. Game screen rebuild
+
+**Files:** `apps/web/src/components/ChessPieces.tsx`, `apps/web/src/components/PlayBoard.tsx`, `apps/web/src/app/game/[id]/GameClient.tsx`, `apps/web/src/app/globals.css`, `apps/web/src/components/ReplayClient.tsx`
+
+**Problems fixed:**
+- No light/dark squares — board was a flat teal sheet.
+- Pieces were brown/ivory with gold outlines from an older token system; knights and bishops unreadable at small sizes.
+- Board orientation wrong for black — black always saw the board from white's perspective; own bar was at the top.
+- Move list showed raw UCI (`b1c3`) not SAN; no numbering.
+- Chain rail was missing or non-functional.
+- All `--fm-*` token references replaced (35 instances in `ReplayClient`, scattered in `ChallengeAcceptClient`).
+- Dark-mode board squares had no override.
+
+**Design decisions (all within the token system):**
+
+| Choice | Token / rationale |
+|--------|------------------|
+| Light squares | `--sq-light` = `#f0e9d2` (warm parchment); dark mode `#3a3530` |
+| Dark squares | `--sq-dark` = `#b58863` (classic wood); dark mode `#5c4a38` |
+| White pieces | Fill `--cloud`, stroke `--ink` thin outline — clean on either square colour |
+| Black pieces | Fill `--ink`, thin `--violet` inner highlight — readable against both squares, nods to the chain |
+| Last-move highlight | `--amber / 0.45` overlay — warm, distinct from check |
+| Check glow | `--coral / 0.35` ring — danger signal, not alarm-red |
+| Legal-move dots | `--ink / 0.22` small circles on empty squares; capture ring on occupied |
+| Chain state mark | Small coloured dot on the last-move "to" square: `--ink-3` queued, `--teal` sent/complete, `--mint` final. Fades from the last move as a new one is made — non-intrusive. |
+| "Sealed" stamp | On transition to `final`, a brief `ring-2 ring-mint scale-105` pulse on the "to" square (200 ms). Feels like a stamp without being decorative animation. |
+| Confetti | Fires only on `checkmate` result — earned, not generic. Uses `--violet`, `--teal`, `--amber`, `--coral` particles via CSS keyframes. |
+| Coordinates | Rank numbers on the a-file; file letters on rank 1. Styled `--ink-3`, 9 px font — visible but quiet. |
+| SAN move list | Numbered pairs (`1. e4 e5`), current move `--teal` background chip, tap to review position, "Back to live" chip when in review mode. |
+| Running clock | `--mint` colour; under 20 s switches to `--coral` with one pulse per second. |
+| Chain rail | Beside the board on desktop, below on mobile. Newest move on top. Each row: ply number, SAN, state dot, time-ago, tap to open explorer. |
+| End screen | Full-board overlay with result, reason, move count, "sealed on Arc" count, share button, next-game actions. Confetti spawns behind the card on checkmate. |
+
+**Hard requirements verified:**
+- Light and dark squares visible in both themes (CSS vars `--sq-light`/`--sq-dark` with dark-mode overrides in `globals.css`).
+- Board orientation: `playerColor` prop flips rank/file rendering; player's own bar always at bottom.
+- Flip button works: toggles `flipped` state, re-renders board.
+- SAN move list with numbered pairs; current move highlighted; tap to review with "back to live" chip.
+- Legal-move dots on all reachable squares; last-move amber highlight; check coral glow; selected piece scale-up.
+- Coordinates on edge squares.
+- Running clock mint / coral-under-20s.
+- Works at 375 px (single-column stacked layout; board fills width).
+- Keyboard: UCI input below the board; visible focus ring.
+
+---
+
 ## Testnet QA Round 2 (2026-10-13)
 
 7 follow-up defects found during the Round 1 verification pass. All fixed; contracts untouched.

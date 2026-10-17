@@ -105,7 +105,7 @@ export default function WalletClient({ userId }: { userId: string }): React.JSX.
             className="pop-btn-ghost pop-btn w-full rounded-2xl py-2.5 text-sm font-extrabold text-center block"
           >
             Open faucet →
-          </Link>
+          </a>
         </div>
       )}
 
@@ -123,7 +123,7 @@ export default function WalletClient({ userId }: { userId: string }): React.JSX.
                   <a href={d.explorerUrl} target="_blank" rel="noopener noreferrer"
                     className="mono text-xs underline" style={{ color: "rgb(var(--teal))" }}>
                     {d.txHash?.slice(0, 10)}…
-                  </Link>
+                  </a>
                 )}
               </li>
             ))}

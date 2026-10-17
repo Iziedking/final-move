@@ -67,6 +67,8 @@ async function waitFor<T>(
 }
 
 import { sql } from "../src/db/client.ts";
+import WS from "ws";
+import net from "net";
 
 const runTag = Date.now().toString(36);
 
@@ -476,6 +478,202 @@ console.log("\n[15] QA Round-1: abort rules (item 10)");
       )
   `;
   check("item10: no ratings updated within 5 s of an abort (last 24 h)", Number(abortedWithRatings[0]?.cnt ?? 0), 0);
+}
+
+// ── [QA-R3-A] WS upgrade routing — 20 concurrent connections + unknown path ───
+// Opens 20 WebSocket connections to /ws and 20 to /v1/agent simultaneously,
+// confirms the server stays alive and refuses unknown paths without crashing.
+console.log("\n── QA Round 3 checks ────────────────────────────────────────");
+{
+  // Check server is still alive after all other tests
+  const alive = await fetch(`${BASE}/health`).then(r => r.ok).catch(() => false);
+  check("A: server alive before WS stress", alive, true);
+
+  // Open 20 /ws connections concurrently and verify each gets a 101 upgrade
+  const wsBase = BASE.replace("http://", "ws://");
+  const wsResults = await Promise.allSettled(
+    Array.from({ length: 20 }, () =>
+      new Promise<boolean>((resolve) => {
+        const ws = new WS(wsBase + "/ws");
+        ws.once("open",  () => { ws.close(); resolve(true);  });
+        ws.once("error", () => { ws.close(); resolve(false); });
+        setTimeout(() => { ws.close(); resolve(false); }, 5_000);
+      })
+    )
+  );
+  const wsOk = wsResults.filter(r => r.status === "fulfilled" && r.value).length;
+  check("A: 20 /ws upgrades all succeed", wsOk, 20);
+
+  // Unknown path must be refused cleanly — server must still respond after
+  const unknownResult = await new Promise<number>((resolve) => {
+    const sock = net.createConnection(
+      { host: "localhost", port: 3001 },
+      () => { sock.write("GET /ws-unknown HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"); }
+    );
+    let status = 0;
+    sock.once("data", (buf) => {
+      const line = buf.toString().split("\r\n")[0] ?? "";
+      status = parseInt(line.split(" ")[1] ?? "0");
+      sock.destroy();
+      resolve(status);
+    });
+    sock.once("error", () => resolve(0));
+    setTimeout(() => { sock.destroy(); resolve(0); }, 3_000);
+  });
+  check("A: unknown WS path refused (404)", unknownResult, 404);
+
+  // Server still alive after the unknown-path probe
+  const aliveAfter = await fetch(`${BASE}/health`).then(r => r.ok).catch(() => false);
+  check("A: server alive after unknown-path probe", aliveAfter, true);
+}
+
+// ── [QA-R3-B2] Separate-origin env vars documented ────────────────────────────
+// Verify the web app's /api/origin-check endpoint (or just that the env var
+// documentation exists and api.ts exports the right helper).
+{
+  // Check that local-run.md exists and documents both topologies
+  try {
+    const { readFileSync } = await import("node:fs");
+    const doc = readFileSync(new URL("../../../docs/local-run.md", import.meta.url), "utf8");
+    check("B2: local-run.md documents Topology 1",  doc.includes("single origin") || doc.includes("Topology 1"), true);
+    check("B2: local-run.md documents Topology 2",  doc.includes("separate origin") || doc.includes("Topology 2"), true);
+    check("B2: NEXT_PUBLIC_API_ORIGIN documented",   doc.includes("NEXT_PUBLIC_API_ORIGIN"), true);
+    check("B2: NEXT_PUBLIC_WS_URL documented",       doc.includes("NEXT_PUBLIC_WS_URL"), true);
+  } catch {
+    check("B2: local-run.md readable", false, true);
+  }
+}
+
+// ── [QA-R3-B3] Server-side pages respond with real data in < 2 s ──────────────
+{
+  // /g/<id> replay — find a recent ended game
+  const recentGames = await sql<{ id: string }[]>`
+    SELECT id FROM games WHERE status IN ('ended','aborted') ORDER BY ended_at DESC LIMIT 1
+  `;
+  if (recentGames.length > 0 && recentGames[0]) {
+    const gid = recentGames[0].id;
+    const t0  = Date.now();
+    const r   = await fetch(`${BASE}/v1/games/${gid}/replay`, { signal: AbortSignal.timeout(4_000) });
+    const ms  = Date.now() - t0;
+    check("B3: /v1/games/:id/replay responds < 2000 ms", ms < 2_000, true);
+    check("B3: /v1/games/:id/replay returns game.id",    (await r.json() as { game?: { id: string } }).game?.id, gid);
+  } else {
+    skip("B3: replay timing", "no ended game in DB");
+  }
+
+  // /v1/profile/bot_1 — should always exist
+  const t1  = Date.now();
+  const rp  = await fetch(`${BASE}/v1/profile/bot_1`, { signal: AbortSignal.timeout(4_000) });
+  const msP = Date.now() - t1;
+  check("B3: /v1/profile/bot_1 responds < 2000 ms", msP < 2_000, true);
+  check("B3: /v1/profile/bot_1 returns profile",    rp.ok, true);
+}
+
+// ── [QA-R3-B5] Abort state is always 'aborted', never 'ended' ─────────────────
+{
+  const wrongAborts = await sql<{ cnt: string }[]>`
+    SELECT COUNT(*) AS cnt FROM games
+    WHERE result = 'aborted' AND status <> 'aborted'
+  `;
+  check("B5: no games with result=aborted but status<>aborted", Number(wrongAborts[0]?.cnt ?? 0), 0);
+
+  const wrongEnded = await sql<{ cnt: string }[]>`
+    SELECT COUNT(*) AS cnt FROM games
+    WHERE status = 'aborted' AND result <> 'aborted'
+  `;
+  check("B5: no games with status=aborted but result<>aborted", Number(wrongEnded[0]?.cnt ?? 0), 0);
+}
+
+// ── [QA-R4A-1] Identity: unauthenticated and wrong-player requests are rejected ──
+{
+  // No token — every protected route should return 401
+  const noTok = await fetch(`${BASE}/v1/games`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ opponent: "bot_1", timeControl: "5+3" }),
+  });
+  check("4A-1: POST /v1/games without token → 401", noTok.status, 401);
+
+  const noMove = await fetch(`${BASE}/v1/games/fake-game/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from: "e2", to: "e4" }),
+  });
+  check("4A-1: POST move without token → 401", noMove.status, 401);
+
+  // Admin routes without ADMIN_TOKEN should be 403
+  const noAdmin = await fetch(`${BASE}/v1/tournaments`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "hack", class: "open", timeControl: "5+3", prizeUsdc: 100 }),
+  });
+  check("4A-1: POST /v1/tournaments without ADMIN_TOKEN → 403", noAdmin.status === 401 || noAdmin.status === 403, true);
+
+  // Internal route upsert should be 403 from web
+  const noUpsert = await fetch(`${BASE}/v1/users/upsert`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ xId: "123", handle: "hacker" }),
+  });
+  check("4A-1: POST /v1/users/upsert without internal secret → 401/403", noUpsert.status === 401 || noUpsert.status === 403, true);
+}
+
+// ── [QA-R4A-3] Money routes protected ─────────────────────────────────────────
+{
+  const stakeOpen = await fetch(`${BASE}/v1/stakes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ gameId: "fake", amountUsdc: 1 }),
+  });
+  check("4A-3: POST /v1/stakes without token → 401", stakeOpen.status, 401);
+
+  const walletRead = await fetch(`${BASE}/v1/wallet/some-other-user`);
+  check("4A-3: GET /v1/wallet/:id without token → 401", walletRead.status, 401);
+}
+
+// ── [QA-R4A-4] Rate limit and body cap ────────────────────────────────────────
+{
+  // Body cap: send > 64 KB body
+  const bigBody = await fetch(`${BASE}/v1/games`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ junk: "x".repeat(70_000) }),
+  });
+  check("4A-4: body > 64 KB → 413", bigBody.status, 413);
+}
+
+// ── [QA-R4A-5] Restart: no stuck live games after cold start ──────────────────
+{
+  // On a running server, every live game should be in liveGames map (via /health debug).
+  // We can only check that there are no live games older than 2h with no recent move.
+  const stuckGames = await sql<{ cnt: string }[]>`
+    SELECT COUNT(*) AS cnt FROM games
+    WHERE status = 'live'
+      AND updated_at < now() - interval '2 hours'
+  `;
+  const stuckN = Number(stuckGames[0]?.cnt ?? 0);
+  check("4A-5: no live games stuck > 2h without update", stuckN, 0);
+}
+
+// ── [QA-R4A-7] Indexer: head is stored in Postgres ────────────────────────────
+{
+  const headRow = await sql<{ value: string }[]>`
+    SELECT value FROM kv_store WHERE key = 'indexer:head'
+  `;
+  check("4A-7: indexer head is in kv_store (Postgres)", headRow.length > 0, true);
+}
+
+// ── [QA-R4A-8] Data integrity: no invalid Postgres in migration 008 ───────────
+{
+  const mig008 = await sql<{ ran_at: string }[]>`
+    SELECT ran_at FROM _migrations WHERE id = '008_exact_chain_game_id'
+  `;
+  check("4A-8: migration 008 ran without error", mig008.length > 0, true);
+
+  const mig009 = await sql<{ ran_at: string }[]>`
+    SELECT ran_at FROM _migrations WHERE id = '009_chain_events_game_id_col'
+  `;
+  check("4A-8: migration 009 ran (chain_events.chain_game_id column)", mig009.length > 0, true);
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

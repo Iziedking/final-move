@@ -29,7 +29,7 @@ export function LeaderboardClient(): React.JSX.Element {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`/v1/leaderboard?class=${cls}&tc=${tc}`)
+    fetch(`${API_BASE}/v1/leaderboard?class=${cls}&tc=${tc}`)
       .then((r) => r.json())
       .then((d: ApiResponse) => setRows(d.rows ?? []))
       .catch(() => setRows([]))

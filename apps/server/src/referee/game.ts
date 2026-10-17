@@ -69,11 +69,38 @@ export interface LiveGame {
   abortTimer?: ReturnType<typeof setTimeout>;
 }
 
-const liveGames = new Map<string, LiveGame>();
+export const liveGames = new Map<string, LiveGame>();
 
 export function getLiveGame(gameId: string): LiveGame | undefined {
   return liveGames.get(gameId);
 }
+
+// ── Per-game move mutex ───────────────────────────────────────────────────────
+// Prevents two concurrent moves from both passing the turn-check before
+// plyCount is incremented.  Uses a promise-chain so calls are serialised
+// without blocking the event loop between games.
+const _moveLocks = new Map<string, Promise<void>>();
+
+export function withMoveLock<T>(gameId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = _moveLocks.get(gameId) ?? Promise.resolve();
+  let resolve!: () => void;
+  const next = new Promise<void>((r) => { resolve = r; });
+  _moveLocks.set(gameId, next);
+  return prev.then(() => fn()).finally(() => {
+    resolve();
+    // Prune the lock once the chain is idle
+    if (_moveLocks.get(gameId) === next) _moveLocks.delete(gameId);
+  });
+}
+
+// ── Bot dedup tracker ─────────────────────────────────────────────────────────
+// Prevents scheduleTournamentBots from launching a second loop per game.
+export const scheduledBotGames = new Set<string>();
+
+// Pruning hook — set by rehydrate.ts after maps are created in index.ts
+let _pruneHook: ((gameId: string) => void) | null = null;
+export function setPruneHook(fn: (gameId: string) => void) { _pruneHook = fn; }
+function pruneMaps(gameId: string) { if (_pruneHook) _pruneHook(gameId); }
 
 // ── nanoid-lite ───────────────────────────────────────────────────────────────
 function nid(prefix: string) {
@@ -197,7 +224,15 @@ export type MoveResult =
   | { ok: true;  fen: string; wMs: number; bMs: number; over: boolean; result?: GameResult; reason?: GameEndReason }
   | { ok: false; reason: string };
 
-export async function handleMove(
+export function handleMove(
+  gameId: string,
+  moverId: string,
+  uci: string,
+): Promise<MoveResult> {
+  return withMoveLock(gameId, () => _handleMove(gameId, moverId, uci));
+}
+
+async function _handleMove(
   gameId: string,
   moverId: string,
   uci: string,
@@ -223,13 +258,16 @@ export async function handleMove(
   }
   // From ply 2 onwards, abandon rules apply (not abort); do nothing extra here.
 
-  // Reset abandon timer
-  clearTimeout(game.abandonTimer);
-
   // Parse + validate the UCI move
   const uciMoves = legalMoves(game.position);
   const matched = uciMoves.find((m) => moveToUci(m) === uci);
+  // Illegal move: do NOT clear the abandon timer — the side to move is still
+  // on the clock; an illegal attempt must not reset the 60s disconnect window.
   if (!matched) return { ok: false, reason: "illegal" };
+
+  // Legal move confirmed — clear the previous abandon timer
+  clearTimeout(game.abandonTimer);
+  game.abandonTimer = undefined;
 
   // Apply clock
   const nowMs = Date.now();
@@ -297,8 +335,14 @@ export async function handleMove(
     return { ok: true, fen: fenAfter, wMs: clockResult.wMs, bMs: clockResult.bMs, over: true, result: res, reason: rea };
   }
 
-  // Set abandon timer for the next player (60s)
-  game.abandonTimer = setTimeout(() => handleAbandon(gameId), 60_000);
+  // Set abandon timer for the next player.
+  // Rules (docs/rules.md): disconnect for 60 s while on move = lose.
+  // We also cap at the side's remaining clock so a flag fires first when
+  // the clock runs out before the 60 s window.
+  const nextColor = game.plyCount % 2 === 0 ? "w" : "b";
+  const nextClock = nextColor === "w" ? clockResult.wMs : clockResult.bMs;
+  const abandonMs = Math.min(60_000, Math.max(5_000, nextClock));
+  game.abandonTimer = setTimeout(() => handleAbandon(gameId), abandonMs);
 
   return { ok: true, fen: fenAfter, wMs: clockResult.wMs, bMs: clockResult.bMs, over: false };
 }
@@ -402,25 +446,41 @@ export async function endGame(
     result,
     reason,
   })).catch(() => {});
+
+  // Prune shared maps (gameRooms, playerGame) after a short delay to let
+  // any final WS messages drain first.
+  setTimeout(() => pruneMaps(game.id), 5_000);
 }
 
+const SCHEDULE_END_GAME_MAX_POLLS = 40; // 40 × 3 s = 2 min cap; alert after
+
 function scheduleEndGame(game: LiveGame, result: GameResult, reason: GameEndReason, fenHash: string) {
-  // Poll until all plies are complete, then enqueue endGame
+  // Poll until all plies are confirmed on-chain, then enqueue endGame.
+  // Cap at SCHEDULE_END_GAME_MAX_POLLS to prevent infinite loops.
   const totalPlies = game.plyCount;
   const resultCode = RESULT_CODES[result];
+  let polls = 0;
 
   const check = async () => {
+    polls++;
+    if (polls > SCHEDULE_END_GAME_MAX_POLLS) {
+      console.error(
+        `[scheduleEndGame] game=${game.id} ALERT: exceeded ${SCHEDULE_END_GAME_MAX_POLLS} polls ` +
+        `waiting for ${totalPlies} plies — enqueuing endGame anyway`,
+      );
+      // Proceed anyway: the contract will accept whatever plies are recorded.
+    }
     const rows = await sql<{ count: string }[]>`
       SELECT COUNT(*) as count FROM moves
       WHERE game_id=${game.id} AND state NOT IN ('complete','final','relayed')
         AND ply <= ${totalPlies}
     `;
     const pending = Number(rows[0]?.count ?? 0);
-    if (pending === 0) {
+    if (pending === 0 || polls > SCHEDULE_END_GAME_MAX_POLLS) {
       await enqueueEndGame({
-        kind: "endGame",
-        gameId: game.chainGameId,
-        result: resultCode,
+        kind:       "endGame",
+        gameId:     game.chainGameId,
+        result:     resultCode,
         reasonCode: REASON_CODES[reason] ?? 0,
         totalPlies,
         fenHash,
@@ -432,7 +492,7 @@ function scheduleEndGame(game: LiveGame, result: GameResult, reason: GameEndReas
   setTimeout(check, 2_000);
 }
 
-async function abortGame(gameId: string, reason: GameEndReason) {
+export async function abortGame(gameId: string, reason: GameEndReason) {
   const game = liveGames.get(gameId);
   // Allow abort from "waiting" (no first move at all) OR "live" with plyCount < 2
   // (white moved but black never replied within 30 s)
@@ -471,6 +531,7 @@ async function abortGame(gameId: string, reason: GameEndReason) {
   }
 
   liveGames.delete(gameId);
+  setTimeout(() => pruneMaps(gameId), 5_000);
 }
 
 async function handleAbandon(gameId: string) {

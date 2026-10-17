@@ -31,7 +31,8 @@ async function get(path: string, headers?: Record<string,string>) {
   return res.json();
 }
 
-function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
+function _sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
+void _sleep; // kept for future use
 
 // ── 0. Ensure smoke user exists ───────────────────────────────────────────────
 await post("/v1/users/upsert", { id: "u_smoke_owner", handle: "SmokeUser" });

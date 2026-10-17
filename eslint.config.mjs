@@ -29,8 +29,9 @@ export default [
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
       "@typescript-eslint/no-explicit-any": "warn",
       "@typescript-eslint/explicit-module-boundary-types": "off",
-      // Next.js rules – only active when the plugin loaded
-      ...(nextPlugin ? nextPlugin.configs?.["core-web-vitals"]?.rules ?? {} : {}),
+      // Next.js rules – only active when the plugin loaded.
+      // Suppress no-html-link-for-pages at root (no pages dir here; web has its own config).
+      ...(nextPlugin ? { ...nextPlugin.configs?.["core-web-vitals"]?.rules ?? {}, "@next/next/no-html-link-for-pages": "off" } : {}),
     },
   },
   // Exclude Next.js img rule for ProfileClient (it intentionally uses <img> for
@@ -51,11 +52,14 @@ export default [
       "packages/ui/src/ChessBoard.reference.tsx",
       "scripts/**",
       "vitest.config.ts",
-      // apps/web has its own .eslintrc.json (extends next/core-web-vitals) so
+      // apps/web has its own eslint.config.mjs (Next.js flat config) so
       // next build uses it directly.  Exclude from the root flat config to avoid
       // running two conflicting rule sets and the "Next.js plugin not detected"
-      // warning that fires when the flat config is used instead of .eslintrc.json.
+      // warning that fires when the flat config is used instead.
       "apps/web/**",
+      // Example scripts are not part of any tsconfig project; exclude them from
+      // the root type-aware lint pass to avoid "file not in project" parse errors.
+      "examples/**",
     ],
   },
 ];

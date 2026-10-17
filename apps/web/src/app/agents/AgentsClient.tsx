@@ -126,7 +126,7 @@ export function AgentsClient({ session }: { session: Session | null }): React.JS
         <a href="https://github.com/Iziedking/final-move/tree/main/examples" target="_blank" rel="noopener noreferrer"
           className="pop-btn-ghost pop-btn inline-block rounded-2xl px-4 py-1.5 text-[12px] font-extrabold">
           View example agents →
-        </Link>
+        </a>
       </div>
     </div>
   );

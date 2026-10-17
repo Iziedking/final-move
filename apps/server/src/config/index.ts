@@ -13,7 +13,7 @@ const Env = z.object({
   ENTITY_SECRET:         z.string().min(1),
   CIRCLE_WALLET_SET_ID:  z.string().min(1),
   REFEREE_WALLET_ID:      z.string().min(1),
-  REFEREE_WALLET_ADDRESS: z.string().optional(),
+  REFEREE_WALLET_ADDRESS: z.string().min(1, "REFEREE_WALLET_ADDRESS is required"),
   TREASURY_WALLET_ID:     z.string().min(1),
   CIRCLE_WEBHOOK_PUBLIC_KEY_URL: z.string().default(""),
   LEDGER_ADDRESS:        z.string().regex(/^0x[0-9a-fA-F]{40}$/),
@@ -25,7 +25,9 @@ const Env = z.object({
   TOPUP_THRESHOLD_USDC:  z.coerce.number().default(0.10),
   TOPUP_AMOUNT_USDC:     z.coerce.number().default(0.25),
   TOPUP_DAILY_CAP_USDC:  z.coerce.number().default(25),
-  SESSION_SECRET:        z.string().default("dev-session-secret-change-me"),
+  SESSION_SECRET:        z.string().min(32).default("dev-session-secret-change-me-at-least-32c"),
+  ADMIN_TOKEN:           z.string().default(""),         // required in prod; empty = admin routes disabled
+  INTERNAL_SECRET:       z.string().default(""),         // shared secret for web→api server-to-server calls
   PUBLIC_WEB_URL:        z.string().default("http://localhost:3000"),
   // Comma-separated list of bot wallet IDs (set after create-bot-wallets runs)
   BOT_WALLET_IDS:        z.string().default(""),

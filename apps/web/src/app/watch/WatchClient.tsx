@@ -74,7 +74,7 @@ export function WatchClient(): React.JSX.Element {
 
         <div className="flex flex-col gap-3">
           {games.map((g) => (
-            <a
+            <Link
               key={g.id}
               href={`/game/${g.id}?spectate=1`}
               className="sticker-card-sm p-4 block transition-all hover:opacity-90 hover:-translate-y-px"

@@ -67,7 +67,7 @@ export function startWorker(walletId: string): Worker {
   const worker = new Worker<ChainJob>(
     queueName(walletId),
     async (job: Job<ChainJob>) => {
-      await processChainJob(job.data, walletId);
+      await processChainJob(job.data, walletId, job.attemptsMade);
     },
     {
       connection: redis,
@@ -105,20 +105,30 @@ export function startWorker(walletId: string): Worker {
 
 // ── Core job processor ────────────────────────────────────────────────────────
 
-async function processChainJob(data: ChainJob, walletId: string) {
+async function processChainJob(data: ChainJob, walletId: string, attempt = 0) {
   switch (data.kind) {
-    case "move":    return processMoveJob(data, walletId);
-    case "relay":   return processRelayJob(data);
-    case "endGame": return processEndGameJob(data);
-    case "createGame": return processCreateGameJob(data);
+    case "move":       return processMoveJob(data, walletId, attempt);
+    case "relay":      return processRelayJob(data, attempt);
+    case "endGame":    return processEndGameJob(data, attempt);
+    case "createGame": return processCreateGameJob(data, attempt);
   }
+}
+
+/** Build an idempotency key that changes on each retry attempt so a FAILED tx
+ *  can be resubmitted.  A previously-FAILED tx cannot be retried with the same
+ *  key — Circle will return the old FAILED state immediately.
+ *  attempt=0 → original submission; attempt=1,2,... → resubmissions.
+ */
+function idempKey(base: string, attempt: number): string {
+  return uuidV5(attempt === 0 ? base : `${base}:retry${attempt}`);
 }
 
 async function processMoveJob(
   data: Extract<ChainJob, { kind: "move" }>,
   walletId: string,
+  attempt = 0,
 ) {
-  const idempKey = uuidV5(`move:${data.gameId}:${data.ply}`);
+  const key = idempKey(`move:${data.gameId}:${data.ply}`, attempt);
   const uciEncoded = encodeUci(data.uci);
   const plyU16 = data.ply;
   const gameIdBytes32 = toBytes32(data.gameId);
@@ -129,7 +139,7 @@ async function processMoveJob(
   let tx: CircleTx;
   try {
     tx = await createContractExecution({
-      idempotencyKey: idempKey,
+      idempotencyKey: key,
       walletId,
       contractAddress: cfg.LEDGER_ADDRESS,
       abiFunctionSignature: MOVE_SIG,
@@ -163,10 +173,10 @@ async function processMoveJob(
   }
 }
 
-async function processRelayJob(data: Extract<ChainJob, { kind: "relay" }>) {
-  const idempKey = uuidV5(`relay:${data.gameId}:${data.ply}`);
+async function processRelayJob(data: Extract<ChainJob, { kind: "relay" }>, attempt = 0) {
+  const key = idempKey(`relay:${data.gameId}:${data.ply}`, attempt);
   const tx = await createContractExecution({
-    idempotencyKey: idempKey,
+    idempotencyKey: key,
     walletId: cfg.REFEREE_WALLET_ID,
     contractAddress: cfg.LEDGER_ADDRESS,
     abiFunctionSignature: RELAY_SIG,
@@ -190,7 +200,7 @@ async function processRelayJob(data: Extract<ChainJob, { kind: "relay" }>) {
   }
 }
 
-async function processEndGameJob(data: Extract<ChainJob, { kind: "endGame" }>) {
+async function processEndGameJob(data: Extract<ChainJob, { kind: "endGame" }>, _attempt = 0) {
   const idempKey = uuidV5(`endGame:${data.gameId}`);
   const tx = await createContractExecution({
     idempotencyKey: idempKey,
@@ -221,31 +231,64 @@ async function processEndGameJob(data: Extract<ChainJob, { kind: "endGame" }>) {
   console.log(`[writer] endGame ok game=${data.gameId} tx=${final.txHash}`);
 }
 
-async function processCreateGameJob(data: Extract<ChainJob, { kind: "createGame" }>) {
-  const idempKey = uuidV5(`createGame:${data.gameId}`);
-  const tx = await createContractExecution({
-    idempotencyKey: idempKey,
-    walletId: cfg.REFEREE_WALLET_ID,
-    contractAddress: cfg.LEDGER_ADDRESS,
-    abiFunctionSignature: CREATE_SIG,
-    abiParameters: [
-      toBytes32(data.gameId),
-      data.whiteAddr,
-      data.blackAddr,
-      data.gameClass,
-      data.baseSec,
-      data.incSec,
-      toBytes32(data.escrowMatchId),
-    ],
-    feeLevel: "HIGH",
-  });
+async function processCreateGameJob(
+  data: Extract<ChainJob, { kind: "createGame" }>,
+  attempt = 0,
+) {
+  const key = idempKey(`createGame:${data.gameId}`, attempt);
+  let tx: CircleTx;
+  try {
+    tx = await createContractExecution({
+      idempotencyKey: key,
+      walletId: cfg.REFEREE_WALLET_ID,
+      contractAddress: cfg.LEDGER_ADDRESS,
+      abiFunctionSignature: CREATE_SIG,
+      abiParameters: [
+        toBytes32(data.gameId),
+        data.whiteAddr,
+        data.blackAddr,
+        data.gameClass,
+        data.baseSec,
+        data.incSec,
+        toBytes32(data.escrowMatchId),
+      ],
+      feeLevel: "HIGH",
+    });
+  } catch (err) {
+    // Permanent submission error — abort the game so it doesn't hang forever
+    console.error(`[writer] createGame submit failed game=${data.gameId}:`, (err as Error).message);
+    await abortGameOnChainFail(data.gameId, "createGame_submit_failed");
+    return; // don't rethrow — no point retrying a submission error
+  }
 
   const final = await pollTx(tx.id, 60_000);
-  if (final.state !== "COMPLETE") throw new Error(`createGame tx ${tx.id} ended ${final.state}`);
+  if (final.state !== "COMPLETE") {
+    console.error(`[writer] createGame tx ${tx.id} ended ${final.state} — aborting game ${data.gameId}`);
+    await abortGameOnChainFail(data.gameId, `createGame_tx_${final.state}`);
+    throw new Error(`createGame tx ended ${final.state}`); // trigger BullMQ retry
+  }
   console.log(`[writer] createGame ok game=${data.gameId} tx=${final.txHash}`);
   // Notify referee so buffered moves are flushed
   const markChainLive = await getMarkChainLive();
   await markChainLive(data.gameId);
+}
+
+/** DB-level abort when the createGame chain tx fails permanently.
+ *  The referee's in-memory game may already be gone; this just ensures the DB is clean.
+ */
+async function abortGameOnChainFail(gameId: string, reason: string): Promise<void> {
+  try {
+    await sql`
+      UPDATE games
+      SET status='aborted', result='aborted', reason=${reason}, ended_at=now()
+      WHERE id=${gameId} AND status NOT IN ('ended','aborted')
+    `;
+    await redis.publish(`game:${gameId}`, JSON.stringify({
+      type: "game_end", gameId, result: "aborted", reason,
+    }));
+  } catch (e) {
+    console.error(`[writer] abortGameOnChainFail error:`, (e as Error).message);
+  }
 }
 
 // ── Webhook handler (called from HTTP route) ──────────────────────────────────

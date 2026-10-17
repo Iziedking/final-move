@@ -26,7 +26,12 @@ export interface QueueEntry {
   timeControl: TimeControl;
   rating:      Rating;
   enqueuedAt:  number; // ms
-  resolve:     (matchedId: string | null) => void;
+  /** Called with the opponent's entry when a pair is found; null = timeout/no match. */
+  resolve:     (opponent: QueueEntry | null) => void;
+  // Player's wallet details (needed to create the game on match)
+  walletId:    string;
+  address:     string;
+  kind:        "user" | "agent" | "bot";
 }
 
 // In-memory queue per (class, timeControl)
@@ -71,7 +76,7 @@ export function enqueue(entry: QueueEntry): void {
       // Remove from queue if still there, offer bot fallback
       const idx = q.indexOf(entry);
       if (idx !== -1) q.splice(idx, 1);
-      entry.resolve(null);
+      entry.resolve(null); // null = no match found → bot fallback
       return;
     }
     tryMatch(key);
@@ -97,9 +102,9 @@ function tryMatch(key: string) {
         // Remove both from queue
         q.splice(j, 1);
         q.splice(i, 1);
-        // Cross-resolve: each gets the other's playerId
-        a.resolve(b.playerId);
-        b.resolve(a.playerId);
+        // Cross-resolve: each gets the full opponent entry so the caller can create a game
+        a.resolve(b);
+        b.resolve(a);
         return;
       }
     }

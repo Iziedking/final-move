@@ -110,7 +110,7 @@ export default function AboutPage(): React.JSX.Element {
         </Section>
 
         <footer className="text-center text-xs font-semibold pt-4 border-t-2" style={{ borderColor: "rgb(var(--ink) / 0.10)", color: "rgb(var(--ink-3))" }}>
-          <p>Final Move is built on <a href="https://arc.io" className="hover:underline font-bold" style={{ color: "rgb(var(--teal))" }}>Arc</Link> by Circle.</p>
+          <p>Final Move is built on <a href="https://arc.io" target="_blank" rel="noopener noreferrer" className="hover:underline font-bold" style={{ color: "rgb(var(--teal))" }}>Arc</a> by Circle.</p>
           <p className="mt-1">Pieces: Lichess cburnett set, CC BY-SA 3.0.</p>
         </footer>
       </main>

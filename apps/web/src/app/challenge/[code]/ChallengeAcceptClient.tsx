@@ -20,35 +20,29 @@ export function ChallengeAcceptClient({ code }: { code: string }): React.JSX.Ele
   const [accepting, setAccepting] = useState(false);
   const [error, setError]         = useState<string | null>(null);
 
-  const serverUrl = API_BASE;
-
   useEffect(() => {
-    fetch(`${serverUrl}/v1/challenges/${code}`)
+    fetch(`${API_BASE}/v1/challenges/${code}`)
       .then((r) => r.ok ? r.json() : Promise.reject(new Error("expired")))
       .then((d: Challenge) => setChallenge(d))
       .catch(() => setError("Challenge not found or expired."))
       .finally(() => setLoading(false));
-  }, [code, serverUrl]);
+  }, [code]);
 
   const handleAccept = async () => {
-    if (!session?.user?.id) {
-      setError("Sign in with X to accept this challenge.");
-      return;
-    }
+    if (!session?.user?.id) { setError("Sign in with X to accept this challenge."); return; }
     if (!challenge) return;
     setAccepting(true);
     try {
-      // Look up both players' wallets and create a human vs human game
-      const res = await fetch(`${serverUrl}/v1/games`, {
+      const res = await fetch(`${API_BASE}/v1/games`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          opponentId:    challenge.challengerId,
-          timeControl:   challenge.timeControl,
-          playerId:      session.user.id,
-          playerHandle:  session.user.handle ?? session.user.name ?? "Player",
-          playerAvatar:  session.user.image ?? undefined,
-          gameClass:     challenge.gameClass,
+          opponentId:   challenge.challengerId,
+          timeControl:  challenge.timeControl,
+          playerId:     session.user.id,
+          playerHandle: session.user.handle ?? session.user.name ?? "Player",
+          playerAvatar: session.user.image ?? undefined,
+          gameClass:    challenge.gameClass,
         }),
       });
       if (!res.ok) throw new Error("Failed to create game");
@@ -62,38 +56,43 @@ export function ChallengeAcceptClient({ code }: { code: string }): React.JSX.Ele
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-fm-canvas">
-        <div className="font-display text-lg text-fm-ink3 animate-pulse">Loading challenge…</div>
+      <div className="flex min-h-screen items-center justify-center" style={{ background: "rgb(var(--sky))" }}>
+        <div className="font-display text-lg font-extrabold animate-pulse" style={{ color: "rgb(var(--ink-3))" }}>
+          Loading challenge…
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-fm-canvas px-4">
-      <div className="w-full max-w-sm rounded-xl border border-fm-ink/20 bg-fm-surface  p-6 flex flex-col gap-4">
-        <div className="font-display text-2xl font-bold text-fm-ink text-center">Challenge!</div>
+    <div className="flex min-h-screen items-center justify-center px-4" style={{ background: "rgb(var(--sky))" }}>
+      <div className="sticker-card w-full max-w-sm p-6 flex flex-col gap-4">
+        <div className="font-display text-2xl font-extrabold text-center" style={{ color: "rgb(var(--ink))" }}>
+          Challenge!
+        </div>
 
         {error ? (
-          <p className="text-center text-sm text-sm text-fm-danger">{error}</p>
+          <p className="text-center text-sm font-semibold" style={{ color: "rgb(var(--danger))" }}>{error}</p>
         ) : challenge ? (
           <>
-            <p className="text-sm text-sm text-fm-ink2 text-center">
+            <p className="text-sm font-medium text-center" style={{ color: "rgb(var(--ink-2))" }}>
               You&apos;ve been challenged to a{" "}
               <strong>{challenge.timeControl}</strong>{" "}
               <strong className="capitalize">{challenge.gameClass}</strong> game.
             </p>
 
             <button
-              onClick={handleAccept}
+              onClick={() => { void handleAccept(); }}
               disabled={accepting}
-              className="w-full rounded-xl border border-fm-ink/20 bg-fm-green py-3 font-display text-lg font-bold text-white  hover: active: transition-all disabled:opacity-60"
+              className="pop-btn w-full rounded-2xl py-3 font-display text-lg font-extrabold disabled:opacity-60"
             >
               {accepting ? "Accepting…" : "Accept challenge"}
             </button>
 
-            <a
+            <Link
               href="/"
-              className="text-center text-sm text-sm text-fm-ink3 hover:text-fm-ink transition-colors"
+              className="text-center text-sm font-semibold transition-colors"
+              style={{ color: "rgb(var(--ink-3))" }}
             >
               Decline
             </Link>

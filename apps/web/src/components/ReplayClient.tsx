@@ -5,7 +5,6 @@ import type React from "react";
 import { useState, useCallback } from "react";
 import { cx } from "@/lib/utils";
 
-const API = API_BASE;
 const ARC_EXPLORER = process.env.NEXT_PUBLIC_ARC_EXPLORER ?? "https://explorer.testnet.arc.io";
 
 interface MoveRow {
@@ -41,9 +40,13 @@ const REASON_LABEL: Record<string, string> = {
   agreement: "by agreement", aborted: "",
 };
 
-const STATE_DOT: Record<string, string> = {
-  queued: "bg-ink-3", sent: "bg-cyan", complete: "bg-cyan", final: "bg-fm-success/20",
-};
+// State dot colour via inline style (avoids purge issues with dynamic class names)
+function stateDotStyle(state: string): React.CSSProperties {
+  if (state === "final")    return { background: "rgb(var(--mint))" };
+  if (state === "complete") return { background: "rgb(var(--teal))" };
+  if (state === "sent")     return { background: "rgb(var(--teal) / 0.6)" };
+  return { background: "rgb(var(--ink) / 0.25)" };
+}
 
 function msToTime(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -60,13 +63,13 @@ export function ReplayClient({ gameId, initialData }: Props): React.JSX.Element 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/v1/games/${gameId}/replay`);
+      const res = await fetch(`${API_BASE}/v1/games/${gameId}/replay`);
       if (res.ok) { const d = await res.json() as GameData; setData(d); setCursor(d.moves.length); }
     } finally { setLoading(false); }
   }, [gameId]);
 
   const handleShare = useCallback(async () => {
-    const res = await fetch(`${API}/v1/games/${gameId}/share`);
+    const res = await fetch(`${API_BASE}/v1/games/${gameId}/share`);
     if (res.ok) {
       const d = await res.json() as { xShareText: string };
       setShareText(d.xShareText);
@@ -78,16 +81,24 @@ export function ReplayClient({ gameId, initialData }: Props): React.JSX.Element 
 
   if (!data) {
     return (
-      <div className="min-h-screen bg-fm-canvas flex flex-col items-center justify-center gap-4 px-4">
-        <div className="text-fm-ink font-display text-2xl font-bold">Final Move Replay</div>
-        <p className="text-fm-ink2 text-sm text-sm">Game not found or still in progress.</p>
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 px-4"
+        style={{ background: "rgb(var(--sky))" }}>
+        <div className="font-display text-2xl font-extrabold" style={{ color: "rgb(var(--ink))" }}>
+          Final Move
+        </div>
+        <p className="text-sm font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+          Game not found or still in progress.
+        </p>
         <button
-          onClick={load}
+          onClick={() => { void load(); }}
           disabled={loading}
-          className="rounded-full border border-fm-ink/20 bg-fm-green px-6 py-2 font-bold text-white  hover: transition-all"
+          className="pop-btn rounded-2xl px-6 py-2 font-bold text-sm"
         >
           {loading ? "Loading…" : "Refresh"}
         </button>
+        <Link href="/" className="text-sm font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+          Back to home
+        </Link>
       </div>
     );
   }
@@ -95,62 +106,90 @@ export function ReplayClient({ gameId, initialData }: Props): React.JSX.Element 
   const { game, moves } = data;
   const currentMove = moves[cursor - 1];
   const finalMoves = moves.filter((m) => m.state === "final").length;
-  const resultLabel = game.result ? RESULT_LABEL[game.result] : "In progress";
-  const reasonLabel = game.reason ? REASON_LABEL[game.reason] ?? "" : "";
+  const resultLabel = game.result ? (RESULT_LABEL[game.result] ?? "Unknown") : "In progress";
+  const reasonLabel = game.reason ? (REASON_LABEL[game.reason] ?? "") : "";
 
   return (
-    <div className="min-h-screen bg-fm-canvas flex flex-col">
+    <div className="min-h-screen flex flex-col" style={{ background: "rgb(var(--sky))" }}>
       {/* Header */}
-      <header className="flex items-center justify-between px-4 py-3 border-b-[3px] border-fm-ink/20 bg-fm-surface ">
-        <Link href="/" className="font-display font-bold text-xl text-fm-ink">Final Move</Link>
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-fm-success bg-fm-success/20/10 px-2 py-1 rounded-full border border-mint">
-            Rebuilt from Arc
-          </span>
-        </div>
+      <header className="flex items-center justify-between px-4 py-3 border-b-[3px]"
+        style={{ background: "rgb(var(--cloud) / 0.9)", borderColor: "rgb(var(--ink) / 0.10)" }}>
+        <Link href="/" className="font-display font-extrabold text-xl"
+          style={{ color: "rgb(var(--ink))" }}>
+          Final Move
+        </Link>
+        <span className="chip text-[10px]" style={{
+          background: "rgb(var(--mint) / 0.15)",
+          color: "rgb(var(--teal))",
+          border: "1.5px solid rgb(var(--mint))",
+        }}>
+          Rebuilt from Arc
+        </span>
       </header>
 
       <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-6 flex flex-col gap-4">
+
         {/* Result card */}
-        <div className="rounded-xl border border-fm-ink/20 bg-fm-surface p-4  flex flex-col gap-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="sticker-card p-5 flex flex-col gap-3">
+          <div className="flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
               <div className="flex flex-col">
-                <span className="font-display font-bold text-lg text-fm-ink">{game.whiteName}</span>
-                <span className="text-xs text-fm-ink3 font-mono">{game.whiteAddress.slice(0, 10)}…</span>
+                <span className="font-display font-extrabold text-base" style={{ color: "rgb(var(--ink))" }}>
+                  {game.whiteName}
+                </span>
+                <span className="text-[10px] font-mono" style={{ color: "rgb(var(--ink-3))" }}>
+                  {game.whiteAddress.slice(0, 10)}…
+                </span>
               </div>
-              <span className="text-sm text-fm-ink2 font-bold">vs</span>
+              <span className="text-sm font-bold" style={{ color: "rgb(var(--ink-3))" }}>vs</span>
               <div className="flex flex-col">
-                <span className="font-display font-bold text-lg text-fm-ink">{game.blackName}</span>
-                <span className="text-xs text-fm-ink3 font-mono">{game.blackAddress.slice(0, 10)}…</span>
+                <span className="font-display font-extrabold text-base" style={{ color: "rgb(var(--ink))" }}>
+                  {game.blackName}
+                </span>
+                <span className="text-[10px] font-mono" style={{ color: "rgb(var(--ink-3))" }}>
+                  {game.blackAddress.slice(0, 10)}…
+                </span>
               </div>
             </div>
-            <div className="flex flex-col items-end">
+            <div className="flex flex-col items-end gap-1">
               <span className={cx(
-                "font-display font-bold text-base px-3 py-1 rounded-full border",
-                game.result === "draw" ? "border-amber text-amber bg-amber/10"
-                : game.result ? "border-mint text-fm-success bg-fm-success/20/10"
-                : "border-fm-ink/20-3 text-fm-ink2 bg-fm-surface2",
-              )}>
+                "font-display font-extrabold text-sm px-3 py-1 rounded-full border-2",
+              )} style={
+                game.result === "draw"
+                  ? { borderColor: "rgb(var(--amber))", color: "rgb(var(--amber))", background: "rgb(var(--amber) / 0.10)" }
+                  : game.result
+                    ? { borderColor: "rgb(var(--mint))", color: "rgb(var(--teal))", background: "rgb(var(--mint) / 0.12)" }
+                    : { borderColor: "rgb(var(--ink) / 0.2)", color: "rgb(var(--ink-2))", background: "rgb(var(--cloud-2))" }
+              }>
                 {resultLabel}
               </span>
-              {reasonLabel && <span className="text-xs text-fm-ink3 mt-1">{reasonLabel}</span>}
+              {reasonLabel && (
+                <span className="text-[11px] font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+                  {reasonLabel}
+                </span>
+              )}
             </div>
           </div>
-          <div className="flex items-center gap-3 text-xs text-fm-ink3 flex-wrap">
-            <span>{game.timeControl} · {game.whiteAddress.slice(0, 6)}…</span>
-            <span className="text-fm-success font-bold">{finalMoves}/{moves.length} final on Arc</span>
+          <div className="flex items-center gap-3 text-[11px] font-semibold flex-wrap"
+            style={{ color: "rgb(var(--ink-3))" }}>
+            <span>{game.timeControl}</span>
+            <span style={{ color: "rgb(var(--teal))" }} className="font-bold">
+              {finalMoves}/{moves.length} moves sealed on Arc
+            </span>
             {game.endedAt && <span>{new Date(game.endedAt).toLocaleDateString()}</span>}
           </div>
         </div>
 
         {/* Scrubber */}
-        <div className="rounded-xl border border-fm-ink/20 bg-fm-surface p-4  flex flex-col gap-3">
+        <div className="sticker-card p-5 flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-bold text-fm-ink text-sm">Move {cursor} / {moves.length}</span>
+            <span className="text-sm font-bold font-display" style={{ color: "rgb(var(--ink))" }}>
+              Move {cursor} / {moves.length}
+            </span>
             <button
               onClick={() => setCursor(moves.length)}
-              className="text-xs text-fm-green font-bold border border-violet rounded-full px-3 py-1 hover:bg-fm-green/10"
+              className="text-[11px] font-extrabold rounded-full px-3 py-1 border-2 transition-colors"
+              style={{ borderColor: "rgb(var(--violet))", color: "rgb(var(--violet))", background: "rgb(var(--violet) / 0.06)" }}
             >
               Go to end
             </button>
@@ -158,18 +197,24 @@ export function ReplayClient({ gameId, initialData }: Props): React.JSX.Element 
           <input
             type="range" min={0} max={moves.length} value={cursor}
             onChange={(e) => setCursor(Number(e.target.value))}
-            className="w-full accent-violet"
+            className="w-full accent-[rgb(var(--teal))]"
+            style={{ accentColor: "rgb(var(--teal))" }}
           />
           {currentMove && (
-            <div className="text-sm font-mono text-fm-ink2 flex items-center gap-2">
-              <span className="font-bold text-fm-ink">{currentMove.san ?? currentMove.uci}</span>
-              <span>·</span>
-              <span>{msToTime(currentMove.clockWMs)}W / {msToTime(currentMove.clockBMs)}B</span>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="font-display font-extrabold" style={{ color: "rgb(var(--ink))" }}>
+                {currentMove.san ?? currentMove.uci}
+              </span>
+              <span style={{ color: "rgb(var(--ink-3))" }}>·</span>
+              <span className="font-mono text-xs" style={{ color: "rgb(var(--ink-2))" }}>
+                {msToTime(currentMove.clockWMs)}W / {msToTime(currentMove.clockBMs)}B
+              </span>
               {currentMove.txHash && (
                 <a
                   href={`${ARC_EXPLORER}/tx/${currentMove.txHash}`}
-                  target="_blank" rel="noopener"
-                  className="text-fm-success hover:underline ml-auto text-xs"
+                  target="_blank" rel="noopener noreferrer"
+                  className="ml-auto text-[11px] font-mono font-bold hover:underline"
+                  style={{ color: "rgb(var(--teal))" }}
                 >
                   {currentMove.txHash.slice(0, 10)}… ↗
                 </a>
@@ -179,24 +224,41 @@ export function ReplayClient({ gameId, initialData }: Props): React.JSX.Element 
         </div>
 
         {/* Chain rail */}
-        <div className="rounded-xl border border-fm-ink/20 bg-fm-surface p-4  flex flex-col gap-2 max-h-96 overflow-y-auto">
-          <span className="font-display font-bold text-sm text-fm-ink mb-1">Chain rail</span>
+        <div className="sticker-card p-5 flex flex-col gap-2 max-h-96 overflow-y-auto">
+          <span className="font-display font-extrabold text-[11px] uppercase tracking-widest mb-1"
+            style={{ color: "rgb(var(--ink-3))" }}>
+            Chain rail
+          </span>
           {moves.length === 0 && (
-            <p className="text-sm text-fm-ink3">No moves recorded.</p>
+            <p className="text-sm font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+              No moves recorded.
+            </p>
           )}
           {moves.slice().reverse().map((m) => (
-            <div key={m.ply} className={cx(
-              "flex items-center gap-2 py-1 px-2 rounded-lg text-xs",
-              cursor === m.ply ? "bg-fm-green/10 border border-violet/30" : "",
-            )}>
-              <span className="w-6 text-right text-fm-ink3 font-mono">{m.ply}.</span>
-              <span className="font-bold font-mono text-fm-ink w-12">{m.san ?? m.uci}</span>
-              <span className={cx("w-2 h-2 rounded-full flex-shrink-0", STATE_DOT[m.state] ?? "bg-ink-3")} />
-              <span className="text-fm-ink2 capitalize">{m.state}</span>
-              {m.block && <span className="text-fm-ink3 font-mono ml-auto">#{m.block.toLocaleString()}</span>}
+            <div key={m.ply} className="flex items-center gap-2 py-1.5 px-2 rounded-xl text-xs transition-colors"
+              style={cursor === m.ply
+                ? { background: "rgb(var(--teal) / 0.10)", border: "1.5px solid rgb(var(--teal) / 0.3)" }
+                : {}
+              }>
+              <span className="w-6 text-right font-mono font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+                {m.ply}.
+              </span>
+              <span className="font-display font-extrabold w-12" style={{ color: "rgb(var(--ink))" }}>
+                {m.san ?? m.uci}
+              </span>
+              <span className="w-2 h-2 rounded-full flex-shrink-0" style={stateDotStyle(m.state)} />
+              <span className="capitalize font-semibold" style={{ color: "rgb(var(--ink-2))" }}>
+                {m.state}
+              </span>
+              {m.block && (
+                <span className="font-mono ml-auto" style={{ color: "rgb(var(--ink-3))" }}>
+                  #{m.block.toLocaleString()}
+                </span>
+              )}
               {m.txHash && (
-                <a href={`${ARC_EXPLORER}/tx/${m.txHash}`} target="_blank" rel="noopener"
-                   className="text-cyan hover:underline font-mono">
+                <a href={`${ARC_EXPLORER}/tx/${m.txHash}`} target="_blank" rel="noopener noreferrer"
+                  className="font-mono font-bold hover:underline"
+                  style={{ color: "rgb(var(--teal))" }}>
                   ↗
                 </a>
               )}
@@ -207,31 +269,34 @@ export function ReplayClient({ gameId, initialData }: Props): React.JSX.Element 
         {/* Actions */}
         <div className="flex gap-3 flex-wrap">
           <button
-            onClick={handleShare}
-            className="flex-1 rounded-full border border-fm-ink/20 bg-fm-green px-4 py-2 font-bold text-white  hover: transition-all text-sm"
+            onClick={() => { void handleShare(); }}
+            className="flex-1 pop-btn rounded-2xl py-2.5 font-bold text-sm"
           >
             Share on X
           </button>
           {game.chainGameId && (
             <a
               href={`${ARC_EXPLORER}/search?q=${game.chainGameId}`}
-              target="_blank" rel="noopener"
-              className="flex-1 rounded-full border border-fm-ink/20 bg-fm-surface px-4 py-2 font-bold text-fm-ink  hover: transition-all text-sm text-center"
+              target="_blank" rel="noopener noreferrer"
+              className="flex-1 pop-btn-ghost pop-btn rounded-2xl py-2.5 font-bold text-sm text-center"
             >
               Verify on Arc ↗
             </a>
           )}
           <button
-            onClick={load}
+            onClick={() => { void load(); }}
             disabled={loading}
-            className="rounded-full border border-fm-ink/20-3 bg-fm-surface2 px-4 py-2 text-sm text-fm-ink2 text-sm hover:bg-fm-surface"
+            className="rounded-2xl border-2 px-4 py-2.5 text-sm font-bold transition-colors"
+            style={{ borderColor: "rgb(var(--ink) / 0.15)", color: "rgb(var(--ink-2))", background: "rgb(var(--cloud))" }}
           >
             {loading ? "…" : "Refresh"}
           </button>
         </div>
 
         {shareText && (
-          <p className="text-xs text-fm-ink3 italic">&ldquo;{shareText}&rdquo;</p>
+          <p className="text-xs font-semibold italic" style={{ color: "rgb(var(--ink-3))" }}>
+            &ldquo;{shareText}&rdquo;
+          </p>
         )}
       </main>
     </div>

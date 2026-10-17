@@ -17,7 +17,7 @@ import {
   buildBracket, nextMatch, recordResult, champion, placements,
   type Seedable,
 } from "@final-move/chess";
-import { createContractExecution, createTokenTransfer } from "../chain/circle.ts";
+import { createContractExecution, uuidV5 } from "../chain/circle.ts";
 import { nanoid } from "../util/ids.ts";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -25,7 +25,8 @@ import { nanoid } from "../util/ids.ts";
 const POOL_ABI_CREATE   = "create(bytes32,uint256,uint16[],uint64)";
 const POOL_ABI_FUND     = "fund(bytes32,uint256)";
 const POOL_ABI_FINALIZE = "finalize(bytes32,address[])";
-const POOL_ABI_CANCEL   = "cancel(bytes32)";
+const _POOL_ABI_CANCEL  = "cancel(bytes32)";
+void _POOL_ABI_CANCEL; // reserved for cancel-tournament flow
 
 // Standard 8-player splits: 50/30/20 → 1st gets 50%, 2nd 30%, 3rd/4th 20% split
 const DEFAULT_SPLITS_BPS: number[] = [5000, 3000, 1000, 1000]; // sum = 10000
@@ -78,23 +79,20 @@ export async function createTournament(opts: {
   const chainTid = toBytes32(id);
 
   // On-chain: create tournament (entry fee = 0, splits = DEFAULT_SPLITS_BPS)
-  try {
-    const regCloseSec = Math.floor(opts.regClose.getTime() / 1000);
-    await createContractExecution({
-      walletId:            cfg.REFEREE_WALLET_ID,
-      contractAddress:     cfg.POOL_ADDRESS,
-      abiFunctionSignature: POOL_ABI_CREATE,
-      abiParameters: [
-        chainTid,
-        "0",
-        DEFAULT_SPLITS_BPS.map(String),
-        String(regCloseSec),
-      ],
-      idempotencyKey: `create_tournament_${id}`,
-    });
-  } catch (err) {
-    console.warn("[tournament] on-chain create failed (non-fatal):", (err as Error).message);
-  }
+  // Idempotency key must be a UUID; use uuidV5 deterministically from the tournament id.
+  const regCloseSec = Math.floor(opts.regClose.getTime() / 1000);
+  await createContractExecution({
+    walletId:             cfg.REFEREE_WALLET_ID,
+    contractAddress:      cfg.POOL_ADDRESS,
+    abiFunctionSignature: POOL_ABI_CREATE,
+    abiParameters: [
+      chainTid,
+      "0",
+      DEFAULT_SPLITS_BPS.map(String),
+      String(regCloseSec),
+    ],
+    idempotencyKey: uuidV5(`tournament:create:${id}`),
+  });
 
   await sql`
     INSERT INTO tournaments
@@ -116,29 +114,31 @@ export async function fundTournament(tournamentId: string): Promise<void> {
   if (!t) throw new Error("tournament_not_found");
   if (BigInt(t.prize_pool_usdc6 ?? 0) <= 0n) return; // no prize to fund
 
-  // Transfer from treasury to TournamentPool contract, then call fund()
-  const fundAmount = (Number(t.prize_pool_usdc6) / 1_000_000).toFixed(6);
-  const fundTx = await createTokenTransfer({
-    sourceWalletId:   cfg.TREASURY_WALLET_ID,
-    destinationAddress: cfg.POOL_ADDRESS,
-    tokenAddress:     cfg.USDC_ADDRESS,
-    amount:           fundAmount,
-    idempotencyKey:   `fund_tournament_${tournamentId}`,
+  // Correct flow: approve TournamentPool to spend USDC from treasury,
+  // then call pool.fund(tid, amount) which does transferFrom internally.
+  // The approve ABI for USDC ERC-20:
+  const ERC20_APPROVE_SIG = "approve(address,uint256)";
+  const approveAmount = String(t.prize_pool_usdc6);
+
+  // Step 1: approve
+  await createContractExecution({
+    walletId:             cfg.TREASURY_WALLET_ID,
+    contractAddress:      cfg.USDC_ADDRESS,
+    abiFunctionSignature: ERC20_APPROVE_SIG,
+    abiParameters:        [cfg.POOL_ADDRESS, approveAmount],
+    idempotencyKey:       uuidV5(`tournament:approve:${tournamentId}`),
+    feeLevel:             "HIGH",
   });
 
-  // Call fund() on-chain from treasury wallet (after transfer arrives)
-  // On Arc this is near-instant; we do it optimistically
-  try {
-    await createContractExecution({
-      walletId:            cfg.TREASURY_WALLET_ID,
-      contractAddress:     cfg.POOL_ADDRESS,
-      abiFunctionSignature: POOL_ABI_FUND,
-      abiParameters:       [t.chain_tid!, String(t.prize_pool_usdc6)],
-      idempotencyKey:      `fund_pool_${tournamentId}`,
-    });
-  } catch (err) {
-    console.warn("[tournament] fund() call failed:", (err as Error).message);
-  }
+  // Step 2: call fund()
+  const fundTx = await createContractExecution({
+    walletId:             cfg.TREASURY_WALLET_ID,
+    contractAddress:      cfg.POOL_ADDRESS,
+    abiFunctionSignature: POOL_ABI_FUND,
+    abiParameters:        [t.chain_tid!, approveAmount],
+    idempotencyKey:       uuidV5(`tournament:fund:${tournamentId}`),
+    feeLevel:             "HIGH",
+  });
 
   const txId = fundTx.id ?? "";
   await sql`
@@ -430,18 +430,20 @@ async function doFinalize(
     }
   }
 
-  // On-chain finalize
-  try {
-    await createContractExecution({
-      walletId:            cfg.REFEREE_WALLET_ID,
-      contractAddress:     cfg.POOL_ADDRESS,
-      abiFunctionSignature: POOL_ABI_FINALIZE,
-      abiParameters:       [t.chain_tid!, placementAddrs],
-      idempotencyKey:      `finalize_tournament_${tournamentId}`,
-    });
-  } catch (err) {
-    console.warn("[tournament] finalize() on-chain failed:", (err as Error).message);
+  // On-chain finalize — must succeed; surface errors so the job can be retried.
+  // Contract requires placementAddrs.length == splitsBps.length, which is nPrize.
+  // Pad with zero address if fewer unique placements than split slots.
+  while (placementAddrs.length < DEFAULT_SPLITS_BPS.length) {
+    placementAddrs.push("0x0000000000000000000000000000000000000000");
   }
+  await createContractExecution({
+    walletId:             cfg.REFEREE_WALLET_ID,
+    contractAddress:      cfg.POOL_ADDRESS,
+    abiFunctionSignature: POOL_ABI_FINALIZE,
+    abiParameters:        [t.chain_tid!, placementAddrs],
+    idempotencyKey:       uuidV5(`tournament:finalize:${tournamentId}`),
+    feeLevel:             "HIGH",
+  });
 
   await sql`
     UPDATE tournaments SET status='done'

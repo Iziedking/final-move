@@ -142,7 +142,7 @@ export function ProfileClient({ playerId, initialData }: { playerId: string; ini
         <span className="font-display font-extrabold text-sm mb-1" style={{ color: "rgb(var(--ink))" }}>Recent games</span>
         {recentGames.length === 0 && <p className="text-sm font-semibold" style={{ color: "rgb(var(--ink-3))" }}>No games yet.</p>}
         {recentGames.map((g) => (
-          <a key={g.id} href={`/g/${g.id}`}
+          <Link key={g.id} href={`/g/${g.id}`}
             className="flex items-center justify-between rounded-2xl px-2 py-1.5 transition-colors hover:opacity-80">
             <div className="flex flex-col">
               <span className="mono text-xs" style={{ color: "rgb(var(--ink-3))" }}>{g.id}</span>

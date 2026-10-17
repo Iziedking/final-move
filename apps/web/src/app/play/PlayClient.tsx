@@ -131,7 +131,7 @@ function ChallengeLink({ gameClass, tc, inputCls, inputStyle }: { gameClass: Gam
 
   const generate = async () => {
     if (!session?.user?.id) return;
-    const res = await fetch(`/v1/challenges`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challengerId: session.user.id, gameClass, timeControl: tc }) });
+    const res = await fetch(`${API_BASE}/v1/challenges`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challengerId: session.user.id, gameClass, timeControl: tc }) });
     const d = await res.json() as { url: string };
     setUrl(d.url);
   };
