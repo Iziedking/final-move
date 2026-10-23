@@ -15,22 +15,21 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       next: { revalidate: 60 },
       signal: AbortSignal.timeout(4_000),
     });
-    if (!res.ok) return { title: "Replay — Final Move" };
+    if (!res.ok) return { title: "Replay" };
     const d = await res.json() as {
       whiteName: string; blackName: string; resultLabel: string;
       moveCount: number; gameId: string;
     };
-    const title       = `${d.whiteName} vs ${d.blackName} — ${d.resultLabel} | Final Move`;
-    const description = `${d.moveCount} moves on Arc. Every move is onchain.`;
-    const ogUrl       = `${base}/v1/games/${id}/og-image`;
+    const title       = `${d.whiteName} vs ${d.blackName}: ${d.resultLabel}`;
+    const description = `${d.moveCount} moves, every one a transaction on Arc. Replay it and verify each move.`;
     return {
       title,
       description,
-      openGraph: { title, description, images: [{ url: ogUrl, width: 1200, height: 630 }] },
-      twitter:   { card: "summary_large_image", title, description, images: [ogUrl] },
+      openGraph: { title, description },
+      twitter:   { card: "summary_large_image", title, description },
     };
   } catch {
-    return { title: "Replay — Final Move" };
+    return { title: "Replay" };
   }
 }
 

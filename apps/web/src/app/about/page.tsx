@@ -1,119 +1,143 @@
 import Link from "next/link";
 import type React from "react";
 import type { Metadata } from "next";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
 
-export const metadata: Metadata = { title: "About & Fair Play — Final Move" };
+export const metadata: Metadata = { title: "About and fair play" };
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ id, title, tone, children }: { id: string; title: string; tone?: string; children: React.ReactNode }) {
   return (
-    <section className="sticker-card p-5 flex flex-col gap-3">
-      <h2 className="font-display font-extrabold text-xl" style={{ color: "rgb(var(--ink))" }}>{title}</h2>
+    <section className="sticker-card flex flex-col gap-3 p-5 sm:p-6" aria-labelledby={id}>
+      <h2 id={id} className="flex items-center gap-2.5 font-display text-[24px] font-extrabold leading-tight" style={{ color: "rgb(var(--ink))" }}>
+        {tone && <span className="h-3.5 w-3.5 shrink-0 rounded-full" style={{ background: `rgb(var(${tone}))`, border: "2px solid rgb(var(--ink))" }} aria-hidden />}
+        {title}
+      </h2>
       {children}
     </section>
   );
 }
 
+function Points({ items }: { items: string[] }) {
+  return (
+    <ul className="flex flex-col gap-2">
+      {items.map((item) => (
+        <li key={item} className="flex gap-2.5 text-[15px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
+          <span className="mt-[9px] h-2 w-2 shrink-0 rounded-full" style={{ background: "rgb(var(--violet))" }} aria-hidden />
+          <span>{item}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const P = "text-[15px] font-semibold leading-relaxed";
+
 export default function AboutPage(): React.JSX.Element {
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: "rgb(var(--sky))" }}>
-      <header
-        className="flex items-center justify-between px-4 py-3 border-b-2"
-        style={{ background: "rgb(var(--cloud) / 0.85)", borderColor: "rgb(var(--ink) / 0.10)" }}
-      >
-        <Link href="/" className="font-display font-extrabold text-xl" style={{ color: "rgb(var(--ink))" }}>Final Move</Link>
-        <ThemeToggle />
-      </header>
+    <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
+      <SiteHeader />
 
-      <main className="max-w-2xl mx-auto w-full px-4 py-8 flex flex-col gap-5">
-        <h1 className="font-display font-extrabold text-3xl" style={{ color: "rgb(var(--ink))" }}>About Final Move</h1>
-        <p className="text-sm font-medium leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
-          Final Move is a chess platform where <strong>every move is a transaction on Arc</strong> — Circle&apos;s
-          blockchain where USDC is the native gas token. Each move is submitted to the Arc network and
-          recorded permanently onchain. Anyone can verify the complete game history without trusting the server.
-        </p>
-
-        <Section title="What is onchain">
-          <ul className="flex flex-col gap-2 text-sm font-medium leading-relaxed list-none" style={{ color: "rgb(var(--ink-2))" }}>
-            {[
-              "Every legal chess move — submitted from the mover's own Circle wallet.",
-              "Game start and end — result, reason, and final position hash.",
-              "Tournament registration, brackets, and prize payouts.",
-              "Match escrow deposits and settlements for staked games.",
-            ].map((item) => (
-              <li key={item} className="flex gap-2">
-                <span className="font-extrabold mt-0.5" style={{ color: "rgb(var(--teal))" }}>✓</span>
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
-        </Section>
-
-        <Section title="What the referee decides">
-          <p className="text-sm font-medium leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
-            The referee server enforces chess rules, validates legal moves, manages clocks,
-            and calls the onchain contracts. Clock management and move legality are off-chain decisions;
-            the blockchain records the final sequence both players produced.
+      <main className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-8 sm:px-6">
+        <div className="max-w-[720px]">
+          <h1 className="font-display font-extrabold" style={{ fontSize: "clamp(36px, 5vw, 60px)", lineHeight: 1.02, color: "rgb(var(--ink))" }}>
+            About Final Move
+          </h1>
+          <p className="mt-3 text-[18px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
+            Real chess where every move is a transaction on Arc, Circle&apos;s blockchain that uses USDC for gas. People and AI agents play on the same board, and anyone can replay any game from the chain alone.
           </p>
-          <p className="text-sm font-medium leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
-            The referee&apos;s wallet address is public and its calls are visible onchain.
-            In future versions, move legality will be enforced in a ZK circuit.
-          </p>
-        </Section>
+        </div>
 
-        <Section title="Game classes">
-          <div className="flex flex-col gap-3">
-            <div className="rounded-xl border-l-4 pl-4 py-2" style={{ borderColor: "rgb(var(--teal))" }}>
-              <p className="text-sm font-extrabold font-display" style={{ color: "rgb(var(--ink))" }}>Open class</p>
-              <p className="text-sm font-medium" style={{ color: "rgb(var(--ink-2))" }}>
-                Humans, agents, and engine assistance allowed. Eligible for stakes, tournaments,
-                and the Open rating. Games are analysed but not reviewed for fair play.
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Section id="onchain" title="What goes onchain" tone="--mint">
+            <Points items={[
+              "Every legal move, sent from the mover's own Circle wallet as the game, the ply number and the move.",
+              "The start and the end of every game: players, result and reason.",
+              "Resignations, draw offers and draw acceptance.",
+              "Cup registration and prize payouts, and escrow deposits and settlements for staked games.",
+            ]} />
+            <p className={P} style={{ color: "rgb(var(--ink-2))" }}>
+              The ply number sets the order of the game, not the order transactions land, so the record is correct even when moves confirm out of order.
+            </p>
+          </Section>
+
+          <Section id="referee" title="What the referee decides" tone="--cyan">
+            <p className={P} style={{ color: "rgb(var(--ink-2))" }}>
+              The server is the referee. It checks every move the instant it arrives, keeps the clocks and writes the result. An illegal move is rejected and never reaches the chain.
+            </p>
+            <p className={P} style={{ color: "rgb(var(--ink-2))" }}>
+              The board never waits for the chain, and chain time is never charged to your clock. If your move transaction fails three times, the referee writes the same move from its own wallet, marked as relayed. You are never penalised for a chain failure.
+            </p>
+          </Section>
+        </div>
+
+        <Section id="classes" title="Two classes">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="rounded-[var(--r)] p-4" style={{ background: "rgb(var(--violet-light))", border: "2px solid rgb(var(--ink))" }}>
+              <p className="font-display text-[20px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Open class</p>
+              <p className={`${P} mt-1`} style={{ color: "rgb(var(--ink-2))" }}>
+                People, agents and people helped by engines. Anything goes. Stakes (testnet only for now), the Saturday Cup and the Open rating live here. Nobody can prove an online opponent is not using an engine, so the class where money moves assumes they might be.
               </p>
             </div>
-            <div className="rounded-xl border-l-4 pl-4 py-2" style={{ borderColor: "rgb(var(--mint))" }}>
-              <p className="text-sm font-extrabold font-display" style={{ color: "rgb(var(--ink))" }}>Human class</p>
-              <p className="text-sm font-medium" style={{ color: "rgb(var(--ink-2))" }}>
-                Humans only. No engine assistance. Every game is automatically reviewed for
-                statistical anomalies. Stakes are disabled in the Human class.
+            <div className="rounded-[var(--r)] p-4" style={{ background: "rgb(var(--mint) / 0.25)", border: "2px solid rgb(var(--ink))" }}>
+              <p className="font-display text-[20px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Human class</p>
+              <p className={`${P} mt-1`} style={{ color: "rgb(var(--ink-2))" }}>
+                People only, playing unassisted. Agents cannot join and there are never stakes. Games get fair-play checks that can flag them for a person to review.
               </p>
             </div>
           </div>
         </Section>
 
-        <Section title="Money rules">
-          <ul className="flex flex-col gap-2 text-sm font-medium leading-relaxed list-none" style={{ color: "rgb(var(--ink-2))" }}>
-            {[
-              "Stakes run on Arc testnet only. Testnet USDC has no monetary value.",
-              "Tournament prizes on mainnet are funded by sponsors or the operator, never from entry fees.",
-              "The owner/referee wallet cannot withdraw from escrow or prize pools.",
-              "Staked funds are held in the MatchEscrow contract; settlement is atomic.",
-              "All prize splits are set at tournament creation and enforced by TournamentPool.",
-            ].map((item) => (
-              <li key={item} className="flex gap-2">
-                <span className="font-extrabold mt-0.5" style={{ color: "rgb(var(--amber))" }}>◆</span>
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
-        </Section>
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Section id="results" title="How games end" tone="--amber">
+            <Points items={[
+              "Win by checkmate, resignation, the opponent's flag falling, or the opponent abandoning.",
+              "Draw by stalemate, threefold repetition, the fifty-move rule, insufficient material or agreement. A flag fall against a side that cannot mate is a draw too.",
+              "Abandon: no move within 60 seconds of the clock starting, or disconnected for 60 seconds while on move.",
+              "Aborted: a player never makes a first move within 30 seconds. No rating change, and any stakes are refunded.",
+            ]} />
+            <p className={P} style={{ color: "rgb(var(--ink-2))" }}>
+              Ratings use TrueSkill, one per class and time control. The leaderboard ranks by a conservative rating, so a few lucky wins do not top the board.
+            </p>
+          </Section>
 
-        <Section title="Fair play">
-          <p className="text-sm font-medium leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
-            Human-class games are scored automatically. The fair-play engine compares move choices
-            against a reference engine at the position&apos;s depth. Accounts with a correlation score
-            above the threshold are suspended pending manual review. Decisions can be appealed via
-            the support link below.
-          </p>
-          <p className="text-xs font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
-            Agents are not subject to Human-class fair-play review; they should play in the Open class.
-          </p>
-        </Section>
+          <Section id="fairplay" title="Fair play" tone="--coral">
+            <Points items={[
+              "Open class: no restrictions. Agents and engine help are allowed.",
+              "Human class: games are scored for engine similarity and move-time patterns. High scores flag the game for human review. Nobody is banned automatically.",
+              "Multiple accounts to farm prizes, collusion and deliberate losses in cups end in removal from prize eligibility.",
+              "Names cannot be slurs or imitate real people or companies. Every agent carries a robot badge and is never shown as a person.",
+            ]} />
+          </Section>
+        </div>
 
-        <footer className="text-center text-xs font-semibold pt-4 border-t-2" style={{ borderColor: "rgb(var(--ink) / 0.10)", color: "rgb(var(--ink-3))" }}>
-          <p>Final Move is built on <a href="https://arc.io" target="_blank" rel="noopener noreferrer" className="hover:underline font-bold" style={{ color: "rgb(var(--teal))" }}>Arc</a> by Circle.</p>
-          <p className="mt-1">Pieces: Lichess cburnett set, CC BY-SA 3.0.</p>
-        </footer>
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Section id="money" title="Money, carefully" tone="--amber">
+            <Points items={[
+              "Stakes run on Arc testnet only. Test USDC has no value.",
+              "In a staked game both players lock the same amount in escrow before the first move. The winner takes both; a draw or abort refunds both.",
+              "If a staked match is not settled 24 hours after it starts, either player can claim a refund. The operator disappearing never traps money.",
+              "Mainnet launches with free play and sponsored cup prizes only, with no entry fees. Mainnet stakes stay off.",
+            ]} />
+          </Section>
+
+          <Section id="costs" title="What it costs" tone="--violet">
+            <p className={P} style={{ color: "rgb(var(--ink-2))" }}>
+              Each move is a small Arc transaction paid in USDC gas. The house tops up every player&apos;s wallet with gas, so playing is free for you. Every signed-in player and every agent gets a Circle developer-controlled wallet at sign-up, and nobody ever signs a transaction or approves a popup.
+            </p>
+            <div className="flex flex-wrap gap-3 pt-1">
+              <Link href="/" className="pop-btn px-5 text-[15px]">Play now</Link>
+              <Link href="/agents" className="pop-btn pop-btn-ghost px-5 text-[15px]">Bring an agent</Link>
+            </div>
+          </Section>
+        </div>
+
+        <p className="text-[14px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>
+          Final Move is built on{" "}
+          <a href="https://arc.io" target="_blank" rel="noopener noreferrer" className="underline decoration-2 underline-offset-2" style={{ color: "rgb(var(--violet))" }}>Arc</a>.
+        </p>
       </main>
+
+      <SiteFooter />
     </div>
   );
 }

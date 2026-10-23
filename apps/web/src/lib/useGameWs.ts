@@ -11,7 +11,9 @@ export interface GameWsState {
   gameState: WsGameState | null;
   chainRail: ChainRailEntry[];
   sendMove: (uci: string) => void;
-  drawOfferedBy: string | null;
+  /** Latest draw offer; `at` changes with every new offer so a decline can be scoped to one. */
+  drawOffer: { by: string; at: number } | null;
+  rematchOfferedBy: string | null;
   ratingDelta: { white: number; black: number } | null;
   rematchGameId: string | null;
   /** True when the server rejected the join token; the caller should refresh it. */
@@ -22,7 +24,8 @@ export function useGameWs(gameId: string, token: string | null): GameWsState {
   const [connected, setConnected]       = useState(false);
   const [gameState, setGameState]       = useState<WsGameState | null>(null);
   const [chainRail, setChainRail]       = useState<ChainRailEntry[]>([]);
-  const [drawOfferedBy, setDrawOfferedBy] = useState<string | null>(null);
+  const [drawOffer, setDrawOffer]       = useState<{ by: string; at: number } | null>(null);
+  const [rematchOfferedBy, setRematchOfferedBy] = useState<string | null>(null);
   const [ratingDelta, setRatingDelta]   = useState<{ white: number; black: number } | null>(null);
   const [rematchGameId, setRematchGameId] = useState<string | null>(null);
   const [authError, setAuthError]       = useState(false);
@@ -83,7 +86,18 @@ export function useGameWs(gameId: string, token: string | null): GameWsState {
       case "move":
         setGameState((prev) => {
           if (!prev) return prev;
-          return { ...prev, fen: msg.fen, plyCount: msg.ply, clockWMs: msg.clockMs.w, clockBMs: msg.clockMs.b, turn: msg.ply % 2 === 0 ? "w" : "b" };
+          // Keep the UCI record in step: it drives SAN, review and the last-move highlight.
+          const moves = [...prev.moves.slice(0, msg.ply - 1), msg.uci];
+          return {
+            ...prev,
+            fen: msg.fen,
+            moves,
+            plyCount: msg.ply,
+            clockWMs: msg.clockMs.w,
+            clockBMs: msg.clockMs.b,
+            turn: msg.ply % 2 === 0 ? "w" : "b",
+            status: prev.status === "waiting" ? "live" : prev.status,
+          };
         });
         setChainRail((prev) => {
           const exists = prev.find((e) => e.ply === msg.ply);
@@ -102,7 +116,7 @@ export function useGameWs(gameId: string, token: string | null): GameWsState {
         break;
       case "game_end":
         setGameState((prev) =>
-          prev ? { ...prev, status: "ended", result: msg.result, reason: msg.reason } : prev,
+          prev ? { ...prev, status: msg.result === "aborted" ? "aborted" : "ended", result: msg.result, reason: msg.reason } : prev,
         );
         break;
       case "clock":
@@ -111,7 +125,7 @@ export function useGameWs(gameId: string, token: string | null): GameWsState {
         );
         break;
       case "draw_offered":
-        setDrawOfferedBy(msg.byPlayerId);
+        setDrawOffer({ by: msg.byPlayerId, at: Date.now() });
         break;
       case "rating_delta":
         setRatingDelta({ white: msg.white, black: msg.black });
@@ -120,7 +134,7 @@ export function useGameWs(gameId: string, token: string | null): GameWsState {
         setRematchGameId(msg.newGameId);
         break;
       case "rematch_offered":
-        // Handled by UI polling
+        setRematchOfferedBy(msg.byPlayerId);
         break;
     }
   }, []);
@@ -143,5 +157,5 @@ export function useGameWs(gameId: string, token: string | null): GameWsState {
     [gameId],
   );
 
-  return { connected, gameState, chainRail, sendMove, drawOfferedBy, ratingDelta, rematchGameId, authError };
+  return { connected, gameState, chainRail, sendMove, drawOffer, rematchOfferedBy, ratingDelta, rematchGameId, authError };
 }

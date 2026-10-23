@@ -539,6 +539,10 @@ app.post("/v1/games/:id/rematch", async (c) => {
   `;
   if (!origRow[0]) return c.json({ error: "game_not_found" }, 404);
   const orig = origRow[0];
+  if (body.playerId !== orig.white_id && body.playerId !== orig.black_id)
+    return c.json({ error: "not_a_player" }, 403);
+  // House bots always accept, so a rematch against a bot starts at once.
+  const opponentIsBot = (body.playerId === orig.white_id ? orig.black_kind : orig.white_kind) === "bot";
 
   // Check if offer exists
   const offerRow = await sql<{ offered_by: string }[]>`
@@ -548,7 +552,7 @@ app.post("/v1/games/:id/rematch", async (c) => {
     LIMIT 1
   `;
 
-  if (!offerRow[0]) {
+  if (!offerRow[0] && !opponentIsBot) {
     // Create offer
     await sql`
       INSERT INTO rematch_offers (game_id, offered_by)
@@ -559,10 +563,17 @@ app.post("/v1/games/:id/rematch", async (c) => {
     return c.json({ status: "offered" });
   }
 
-  if (offerRow[0].offered_by === body.playerId) return c.json({ status: "already_offered" });
+  if (offerRow[0]?.offered_by === body.playerId && !opponentIsBot) return c.json({ status: "already_offered" });
 
-  // Accept — swap colors for rematch
-  await sql`UPDATE rematch_offers SET accepted=true WHERE game_id=${origGameId}`;
+  // Accept — swap colors for rematch. The flag flip is the single-use guard.
+  const taken = await sql`
+    INSERT INTO rematch_offers (game_id, offered_by, accepted)
+    VALUES (${origGameId}, ${body.playerId}, true)
+    ON CONFLICT (game_id) DO UPDATE SET accepted=true
+      WHERE rematch_offers.accepted=false
+    RETURNING game_id
+  `;
+  if (taken.length === 0) return c.json({ error: "rematch_taken" }, 409);
 
   const newGame = await createGame({
     whiteId:       orig.black_id,   // swap
@@ -618,6 +629,20 @@ app.get("/v1/feed/recent", async (c) => {
   };
   recentFeed = { at: Date.now(), body };
   return c.json(body);
+});
+
+/** GET /v1/names?ids=a,b — public display names for lists (watch, leaderboard, challenges). */
+app.get("/v1/names", async (c) => {
+  const ids = [...new Set((c.req.query("ids") ?? "").split(",").map((s) => s.trim()).filter(Boolean))].slice(0, 100);
+  if (ids.length === 0) return c.json({ names: {} });
+  const [users, agents] = await Promise.all([
+    sql<{ id: string; handle: string; avatar: string | null }[]>`SELECT id, handle, avatar FROM users WHERE id IN ${sql(ids)}`,
+    sql<{ id: string; name: string }[]>`SELECT id, name FROM agents WHERE id IN ${sql(ids)}`,
+  ]);
+  const names: Record<string, { name: string; kind: string; avatar?: string | null }> = {};
+  for (const u of users) names[u.id] = { name: `@${u.handle.replace(/^@/, "")}`, kind: "user", avatar: u.avatar };
+  for (const a of agents) names[a.id] = { name: a.name, kind: "agent" };
+  return c.json({ names });
 });
 
 /** GET /v1/watch — live and recent games for the Watch page */
@@ -1356,18 +1381,22 @@ app.get("/v1/games/:id/share", async (c) => {
 
   const totalMoves = await sql<{ cnt: string }[]>`SELECT COUNT(*) as cnt FROM moves WHERE game_id=${id}`;
   const moveCount = Number(totalMoves[0]?.cnt ?? 0);
+  const [whiteName, blackName] = await Promise.all([
+    displayName(g.white_id, g.white_kind),
+    displayName(g.black_id, g.black_kind),
+  ]);
 
   const resultLabel =
-    g.result === "white" ? `${wUser[0]?.handle ?? g.white_id} wins`
-    : g.result === "black" ? `${bUser[0]?.handle ?? g.black_id} wins`
+    g.result === "white" ? `${whiteName} wins`
+    : g.result === "black" ? `${blackName} wins`
     : g.result === "draw"  ? "Draw"
     : "Game";
 
   return c.json({
     gameId: id,
-    whiteName: wUser[0]?.handle ?? g.white_id,
+    whiteName,
     whiteAvatar: wUser[0]?.avatar ?? null,
-    blackName: bUser[0]?.handle ?? g.black_id,
+    blackName,
     blackAvatar: bUser[0]?.avatar ?? null,
     result: g.result,
     reason: g.reason,
@@ -1375,7 +1404,7 @@ app.get("/v1/games/:id/share", async (c) => {
     timeControl: g.time_control,
     moveCount,
     endedAt: g.ended_at,
-    xShareText: `${resultLabel} in ${moveCount} moves on Arc. Every move is on-chain. Verify it at finalmo.ve/g/${id} #FinalMove`,
+    xShareText: `${resultLabel} in ${moveCount} moves on Arc. Every move is on-chain. Verify it at ${cfg.PUBLIC_WEB_URL}/g/${id} #FinalMove`,
   });
 });
 

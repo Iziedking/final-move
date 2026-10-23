@@ -1,11 +1,13 @@
 "use client";
 import { API_BASE } from "@/lib/api";
+import { botName } from "@/lib/bots";
+import { useNames } from "@/lib/names";
 import Link from "next/link";
+import Image from "next/image";
 import type React from "react";
-import { useState, useCallback } from "react";
-import { ThemeToggle } from "@/components/ThemeToggle";
-
-const API = API_BASE;
+import { useState, useCallback, useEffect } from "react";
+import { BotAvatar } from "@/components/BotAvatar";
+import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
 
 interface RatingRow { class: string; timeControl: string; mu: number; sigma: number; games: number; conservative: number; }
 interface StreakRow  { class: string; current_streak: number; best_streak: number; }
@@ -20,145 +22,208 @@ interface ProfileData {
   recentGames: GameRow[];
 }
 
-const RESULT_STYLE: Record<string, React.CSSProperties> = {
-  win:     { color: "rgb(var(--teal))",    borderColor: "rgb(var(--teal))",    background: "rgb(var(--teal-light))" },
-  loss:    { color: "rgb(var(--danger))",  borderColor: "rgb(var(--danger))",  background: "rgb(var(--danger) / 0.10)" },
-  draw:    { color: "rgb(var(--amber))",   borderColor: "rgb(var(--amber))",   background: "rgb(var(--amber) / 0.12)" },
-  aborted: { color: "rgb(var(--ink-3))",   borderColor: "rgb(var(--ink-3))",   background: "rgb(var(--cloud-2))" },
+const RESULT: Record<string, { label: string; bg: string; fg: string }> = {
+  win:     { label: "Won",        bg: "rgb(var(--mint))",    fg: "rgb(var(--candy-ink))" },
+  loss:    { label: "Lost",       bg: "rgb(var(--coral))",   fg: "#fff" },
+  draw:    { label: "Draw",       bg: "rgb(var(--cyan))",    fg: "rgb(var(--candy-ink))" },
+  aborted: { label: "Called off", bg: "rgb(var(--cloud-2))", fg: "rgb(var(--ink-2))" },
 };
 
+function Shell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
+      <SiteHeader />
+      <main className="mx-auto flex w-full max-w-[1120px] flex-col gap-6 px-4 pt-8 sm:px-6 lg:pt-12">{children}</main>
+      <SiteFooter />
+    </div>
+  );
+}
+
 export function ProfileClient({ playerId, initialData }: { playerId: string; initialData: ProfileData | null }): React.JSX.Element {
-  const [data, setData]     = useState<ProfileData | null>(initialData);
+  const [data, setData]       = useState<ProfileData | null>(initialData);
   const [loading, setLoading] = useState(false);
+  const [missing, setMissing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const res = await fetch(`${API}/v1/profile/${playerId}`); if (res.ok) setData(await res.json() as ProfileData); }
+    try {
+      const res = await fetch(`${API_BASE}/v1/profile/${playerId}`);
+      if (res.ok) { setData(await res.json() as ProfileData); setMissing(false); }
+      else if (res.status === 404) setMissing(true);
+    } catch { /* keep what we have; the retry button stays */ }
     finally { setLoading(false); }
   }, [playerId]);
 
-  const shell = (children: React.ReactNode) => (
-    <div className="min-h-screen" style={{ background: "rgb(var(--sky))" }}>
-      <header className="flex items-center justify-between px-4 py-3 border-b-2" style={{ background: "rgb(var(--cloud) / 0.85)", borderColor: "rgb(var(--ink) / 0.10)" }}>
-        <Link href="/" className="font-display font-extrabold text-xl" style={{ color: "rgb(var(--ink))" }}>Final Move</Link>
-        <ThemeToggle />
-      </header>
-      <main className="max-w-xl mx-auto w-full px-4 py-6 flex flex-col gap-4">{children}</main>
-    </div>
-  );
+  // The server render may have missed the API; fetch from the browser instead.
+  useEffect(() => { if (!initialData) void load(); }, [initialData, load]);
 
-  if (!data) return shell(
-    <div className="flex flex-col items-center justify-center py-20 gap-4">
-      <div className="font-display text-2xl font-extrabold" style={{ color: "rgb(var(--ink))" }}>Profile</div>
-      <button onClick={() => { void load(); }} disabled={loading} className="pop-btn rounded-full px-6 py-2 font-bold">
-        {loading ? "Loading…" : "Load profile"}
-      </button>
-    </div>
-  );
+  const opponents = (data?.recentGames ?? []).map((g) => {
+    const id = g.playerColor === "w" ? g.blackId : g.whiteId;
+    return { id };
+  });
+  const names = useNames(opponents);
+
+  if (!data) {
+    return (
+      <Shell>
+        <div className="sticker-card mx-auto mt-6 flex w-full max-w-[460px] flex-col items-center gap-4 p-8 text-center" aria-live="polite">
+          {loading ? (
+            <>
+              <div className="h-7 w-7 animate-spin rounded-full border-[3px]" style={{ borderColor: "rgb(var(--violet))", borderTopColor: "transparent" }} />
+              <p className="font-display text-[20px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Loading profile…</p>
+            </>
+          ) : missing ? (
+            <>
+              <p className="font-display text-[26px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>No player here</p>
+              <p className="text-[15px] font-semibold" style={{ color: "rgb(var(--ink-2))" }}>This profile does not exist. Players appear once they sign in and play.</p>
+              <Link href="/leaderboard" className="pop-btn min-h-[48px] px-6 text-[15px]">See the leaderboard</Link>
+            </>
+          ) : (
+            <>
+              <p className="font-display text-[24px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>We could not load this profile</p>
+              <p className="text-[15px] font-semibold" style={{ color: "rgb(var(--ink-2))" }}>Check your connection and try again.</p>
+              <button type="button" onClick={() => { void load(); }} className="pop-btn min-h-[48px] px-6 text-[15px]">Try again</button>
+            </>
+          )}
+        </div>
+      </Shell>
+    );
+  }
 
   const { profile, stats, ratings, streaks, titles, recentGames } = data;
-  const openRating = ratings.find((r) => r.class === "open" && r.timeControl === "5+3");
+  const isBot = profile.kind === "bot" || profile.id.startsWith("bot_");
+  const isMachine = isBot || profile.kind === "agent";
+  const displayName = isBot ? (botName(profile.id) ?? profile.name) : profile.kind === "agent" ? profile.name : `@${profile.name.replace(/^@/, "")}`;
+  const best = [...ratings].sort((a, b) => b.conservative - a.conservative)[0];
+  const winRate = stats.total > 0 ? Math.round((stats.wins / stats.total) * 100) : null;
 
-  return shell(
-    <>
+  return (
+    <Shell>
       {/* Identity */}
-      <div className="sticker-card p-5 flex items-center gap-4">
-        {profile.avatar ? (
-          <img src={profile.avatar} alt={profile.name} className="w-14 h-14 rounded-2xl border-2" style={{ borderColor: "rgb(var(--ink))" }} />
-        ) : (
-          <div className="w-14 h-14 rounded-2xl border-2 flex items-center justify-center text-2xl font-display font-extrabold" style={{ borderColor: "rgb(var(--ink))", background: "rgb(var(--teal-light))", color: "rgb(var(--teal-deep))" }}>
-            {profile.name[0]?.toUpperCase()}
-          </div>
-        )}
-        <div className="flex flex-col flex-1 min-w-0">
-          <span className="font-display font-extrabold text-xl truncate" style={{ color: "rgb(var(--ink))" }}>{profile.name}</span>
-          <span className="text-xs font-semibold" style={{ color: "rgb(var(--ink-3))" }}>{profile.kind} · joined {profile.createdAt ? new Date(profile.createdAt).toLocaleDateString() : "—"}</span>
-          {openRating && <span className="text-sm font-extrabold mt-1" style={{ color: "rgb(var(--teal))" }}>{openRating.conservative} rating</span>}
-        </div>
-      </div>
-
-      {/* Titles */}
-      {titles.length > 0 && (
-        <div className="flex gap-2 flex-wrap">
-          {titles.map((t) => (
-            <span key={t.title} className="chip" style={{ background: "rgb(var(--amber))", borderColor: "rgb(var(--ink))", color: "rgb(var(--ink))" }}>{t.title}</span>
-          ))}
-        </div>
-      )}
-
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
-        {[
-          { label: "Wins",   value: stats.wins,   color: "rgb(var(--teal))"   },
-          { label: "Draws",  value: stats.draws,  color: "rgb(var(--amber))"  },
-          { label: "Losses", value: stats.losses, color: "rgb(var(--danger))" },
-        ].map(({ label, value, color }) => (
-          <div key={label} className="sticker-card-sm p-3 text-center">
-            <div className="font-display font-extrabold text-2xl" style={{ color }}>{value}</div>
-            <div className="text-xs font-bold" style={{ color: "rgb(var(--ink-3))" }}>{label}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Streaks */}
-      {streaks.length > 0 && (
-        <div className="sticker-card-sm p-4 flex flex-col gap-2">
-          <span className="font-display font-extrabold text-sm mb-1" style={{ color: "rgb(var(--ink))" }}>Streaks</span>
-          {streaks.map((s) => (
-            <div key={s.class} className="flex items-center justify-between text-sm">
-              <span className="font-semibold capitalize" style={{ color: "rgb(var(--ink-2))" }}>{s.class} class</span>
-              <div className="flex gap-3">
-                <span className="font-extrabold" style={{ color: s.current_streak > 0 ? "rgb(var(--teal))" : s.current_streak < 0 ? "rgb(var(--danger))" : "rgb(var(--ink-3))" }}>
-                  {s.current_streak > 0 ? `${s.current_streak}W` : s.current_streak < 0 ? `${Math.abs(s.current_streak)}L` : "—"}
-                </span>
-                <span className="text-xs font-semibold" style={{ color: "rgb(var(--ink-3))" }}>best {s.best_streak}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Ratings */}
-      {ratings.length > 0 && (
-        <div className="sticker-card-sm p-4 flex flex-col gap-2">
-          <span className="font-display font-extrabold text-sm mb-1" style={{ color: "rgb(var(--ink))" }}>Ratings</span>
-          {ratings.map((r) => (
-            <div key={`${r.class}-${r.timeControl}`} className="flex items-center justify-between text-sm border-b-2 last:border-b-0 pb-2 last:pb-0" style={{ borderColor: "rgb(var(--ink) / 0.08)" }}>
-              <div>
-                <span className="font-extrabold font-display capitalize" style={{ color: "rgb(var(--ink))" }}>{r.class}</span>
-                <span className="ml-2 font-semibold" style={{ color: "rgb(var(--ink-3))" }}>{r.timeControl}</span>
-              </div>
-              <div className="flex gap-3 items-center">
-                <span className="font-extrabold" style={{ color: "rgb(var(--teal))" }}>{r.conservative}</span>
-                <span className="text-xs font-semibold" style={{ color: "rgb(var(--ink-3))" }}>{r.games} games</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Recent games */}
-      <div className="sticker-card-sm p-4 flex flex-col gap-2">
-        <span className="font-display font-extrabold text-sm mb-1" style={{ color: "rgb(var(--ink))" }}>Recent games</span>
-        {recentGames.length === 0 && <p className="text-sm font-semibold" style={{ color: "rgb(var(--ink-3))" }}>No games yet.</p>}
-        {recentGames.map((g) => (
-          <Link key={g.id} href={`/g/${g.id}`}
-            className="flex items-center justify-between rounded-2xl px-2 py-1.5 transition-colors hover:opacity-80">
-            <div className="flex flex-col">
-              <span className="mono text-xs" style={{ color: "rgb(var(--ink-3))" }}>{g.id}</span>
-              <span className="text-xs font-semibold" style={{ color: "rgb(var(--ink-2))" }}>{g.timeControl} · {g.class}</span>
-            </div>
-            <span className="rounded-full border-2 px-2.5 py-0.5 text-xs font-extrabold capitalize" style={RESULT_STYLE[g.playerResult] ?? {}}>
-              {g.playerResult}
+      <section className="flex flex-col gap-5 sm:flex-row sm:items-center">
+        <span className="relative h-24 w-24 shrink-0 overflow-hidden rounded-[26px]" style={{ border: "var(--line) solid rgb(var(--ink))", background: "rgb(var(--violet-light))", boxShadow: "4px 4px 0 rgb(var(--pop-shadow))", transform: "rotate(-3deg)" }}>
+          {isMachine ? <BotAvatar botId={profile.id} className="h-full w-full p-1.5" />
+            : profile.avatar ? <Image src={profile.avatar} alt="" fill sizes="96px" className="object-cover" />
+            : <span className="grid h-full w-full place-items-center font-display text-[40px] font-extrabold" style={{ color: "rgb(var(--violet))" }}>{profile.name.replace("@", "")[0]?.toUpperCase()}</span>}
+        </span>
+        <div className="min-w-0">
+          <h1 className="truncate font-display font-extrabold" style={{ fontSize: "clamp(34px, 5vw, 56px)", lineHeight: 1, color: "rgb(var(--ink))" }}>{displayName}</h1>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="chip" style={{ background: isBot ? "rgb(var(--cyan))" : profile.kind === "agent" ? "rgb(var(--amber))" : "rgb(var(--mint))", color: "rgb(var(--candy-ink))" }}>
+              {isBot ? "House bot" : profile.kind === "agent" ? "Agent" : "Player"}
             </span>
-          </Link>
-        ))}
-      </div>
+            {titles.map((t) => (
+              <span key={t.title} className="chip" style={{ background: "rgb(var(--amber))", color: "rgb(var(--candy-ink))" }}>★ {t.title}</span>
+            ))}
+            {profile.createdAt && (
+              <span className="text-[13px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>Joined {new Date(profile.createdAt).toLocaleDateString(undefined, { month: "short", year: "numeric" })}</span>
+            )}
+          </div>
+        </div>
+      </section>
 
-      <button onClick={() => { void load(); }} disabled={loading}
-        className="pop-btn-ghost pop-btn self-center rounded-full px-6 py-2 text-sm font-bold">
-        {loading ? "…" : "Refresh"}
-      </button>
-    </>
+      {/* Numbers */}
+      <section className="grid grid-cols-2 gap-4 md:grid-cols-4" aria-label="Record">
+        {[
+          { label: best ? `Best rating · ${best.class === "human" ? "Human" : "Open"} ${best.timeControl.replace("+", " + ")}` : "Rating", value: best ? String(best.conservative) : "–", color: "rgb(var(--violet))" },
+          { label: "Wins", value: String(stats.wins), color: "rgb(var(--ink))" },
+          { label: "Draws", value: String(stats.draws), color: "rgb(var(--ink))" },
+          { label: "Losses", value: String(stats.losses), color: "rgb(var(--ink))" },
+        ].map((s) => (
+          <div key={s.label} className="sticker-card p-4">
+            <div className="font-display text-[40px] font-extrabold leading-none tabular-nums" style={{ color: s.color }}>{s.value}</div>
+            <div className="mt-1.5 text-[13px] font-extrabold" style={{ color: "rgb(var(--ink-3))" }}>{s.label}</div>
+          </div>
+        ))}
+      </section>
+      {winRate !== null && (
+        <div className="-mt-2">
+          <div className="flex h-4 overflow-hidden rounded-full" style={{ border: "2px solid rgb(var(--ink))" }} role="img" aria-label={`${stats.wins} wins, ${stats.draws} draws, ${stats.losses} losses`}>
+            <div style={{ width: `${(stats.wins / stats.total) * 100}%`, background: "rgb(var(--mint))" }} />
+            <div style={{ width: `${(stats.draws / stats.total) * 100}%`, background: "rgb(var(--cyan))" }} />
+            <div style={{ width: `${(stats.losses / stats.total) * 100}%`, background: "rgb(var(--coral))" }} />
+          </div>
+          <p className="mt-1.5 text-[13px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>{winRate}% won across {stats.total} games</p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        {/* Recent games */}
+        <section className="sticker-card p-5" aria-labelledby="recent">
+          <h2 id="recent" className="mb-3 font-display text-[24px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Recent games</h2>
+          {recentGames.length === 0 ? (
+            <div className="flex flex-col items-start gap-3 py-2">
+              <p className="text-[15px] font-semibold" style={{ color: "rgb(var(--ink-2))" }}>No finished games yet.</p>
+              <Link href="/" className="pop-btn min-h-[44px] px-5 text-[14px]">Play a game</Link>
+            </div>
+          ) : (
+            <ul className="flex flex-col">
+              {recentGames.map((g) => {
+                const r = RESULT[g.playerResult] ?? RESULT.aborted!;
+                const oppId = g.playerColor === "w" ? g.blackId : g.whiteId;
+                return (
+                  <li key={g.id} style={{ borderBottom: "2px solid rgb(var(--ink) / 0.08)" }} className="last:border-b-0">
+                    <Link href={`/g/${g.id}`} className="flex min-h-[56px] items-center gap-3 rounded-xl px-2 py-2 hover:bg-[rgb(var(--violet-light))]">
+                      <span className="h-3.5 w-3.5 shrink-0 rounded-full" role="img" aria-label={g.playerColor === "w" ? "played white" : "played black"} style={{ background: g.playerColor === "w" ? "#fff" : "rgb(var(--piece-black))", border: "2px solid rgb(var(--piece-line))" }} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-display text-[16px] font-extrabold leading-tight" style={{ color: "rgb(var(--ink))" }}>vs {names[oppId]?.name ?? "…"}</span>
+                        <span className="text-[12px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>
+                          {g.timeControl.replace("+", " + ")} · {g.class === "human" ? "Human" : "Open"} · {new Date(g.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                        </span>
+                      </span>
+                      <span className="chip shrink-0" style={{ background: r.bg, color: r.fg }}>{r.label}</span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        <div className="flex flex-col gap-6">
+          {ratings.length > 0 && (
+            <section className="sticker-card p-5" aria-labelledby="ratings">
+              <h2 id="ratings" className="mb-3 font-display text-[24px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Ratings</h2>
+              <ul className="flex flex-col gap-2">
+                {ratings.map((r) => (
+                  <li key={`${r.class}-${r.timeControl}`} className="flex items-center justify-between rounded-xl px-3 py-2.5" style={{ background: "rgb(var(--cloud-2))" }}>
+                    <span className="text-[14px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>
+                      {r.class === "human" ? "Human" : "Open"} <span style={{ color: "rgb(var(--ink-3))" }}>{r.timeControl.replace("+", " + ")}</span>
+                    </span>
+                    <span className="text-right">
+                      <span className="block font-display text-[20px] font-extrabold leading-none tabular-nums" style={{ color: "rgb(var(--violet))" }}>{r.conservative}</span>
+                      <span className="text-[11px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>{r.games} games</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {streaks.length > 0 && (
+            <section className="sticker-card p-5" aria-labelledby="streaks">
+              <h2 id="streaks" className="mb-3 font-display text-[24px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Streaks</h2>
+              <ul className="flex flex-col gap-2">
+                {streaks.map((s) => (
+                  <li key={s.class} className="flex items-center justify-between rounded-xl px-3 py-2.5" style={{ background: "rgb(var(--cloud-2))" }}>
+                    <span className="text-[14px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>{s.class === "human" ? "Human" : "Open"} class</span>
+                    <span className="flex items-center gap-3">
+                      <span className="font-display text-[18px] font-extrabold" style={{ color: s.current_streak > 0 ? "rgb(var(--mint))" : s.current_streak < 0 ? "rgb(var(--coral))" : "rgb(var(--ink-3))" }}>
+                        {s.current_streak > 0 ? `${s.current_streak} wins` : s.current_streak < 0 ? `${Math.abs(s.current_streak)} losses` : "None"}
+                      </span>
+                      <span className="text-[12px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>best {s.best_streak}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          <button type="button" onClick={() => { void load(); }} disabled={loading} className="pop-btn pop-btn-ghost min-h-[44px] self-start px-5 text-[14px]">
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+      </div>
+    </Shell>
   );
 }

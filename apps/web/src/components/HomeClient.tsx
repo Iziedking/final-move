@@ -1,24 +1,18 @@
 "use client";
 import type React from "react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import type { Session } from "next-auth";
-import { signIn, signOut } from "next-auth/react";
+import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { apiFetch, describeError } from "@/lib/session";
 import { API_BASE } from "@/lib/api";
 import { explorerTx } from "@/lib/utils";
+import { BOTS } from "@/lib/bots";
 import { HvMScoreboard } from "@/components/HvMScoreboard";
 import { BotAvatar } from "@/components/BotAvatar";
-import { ThemeToggle } from "@/components/ThemeToggle";
-
-const BOT_LEVELS = [
-  { id: "bot_1", name: "Pawnderer",  desc: "Perfect for beginners",       elo: "~600" },
-  { id: "bot_2", name: "Knightfall", desc: "A bit unpredictable",          elo: "~900" },
-  { id: "bot_3", name: "Rookery",    desc: "Solid, steady play",           elo: "~1200" },
-  { id: "bot_4", name: "Bishopric",  desc: "Tactical awareness",           elo: "~1500" },
-  { id: "bot_5", name: "GrandBot",   desc: "Relentless engine strength",   elo: "~1900" },
-] as const;
+import { HeroBoard } from "@/components/HeroBoard";
+import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
 
 const TIME_CONTROLS = [
   { id: "3+2",  label: "3 + 2",  desc: "Blitz" },
@@ -28,85 +22,10 @@ const TIME_CONTROLS = [
 
 interface Props { session: Session | null; }
 
-/* ── floating chess-piece SVGs ─────────────────────────────────────────── */
-function FloatPiece({ path, cls, style }: { path: string; cls: string; style?: React.CSSProperties }) {
-  return (
-    <svg
-      viewBox="0 0 45 45"
-      xmlns="http://www.w3.org/2000/svg"
-      className={`absolute pointer-events-none select-none ${cls}`}
-      style={style}
-      aria-hidden
-    >
-      <path
-        d={path}
-        fill="rgb(var(--teal))"
-        stroke="rgb(var(--ink))"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        opacity="0.22"
-      />
-    </svg>
-  );
-}
-
-/* Chess piece paths (simplified outlines) */
-const PIECE_PATHS = {
-  king:   "M22.5 11.63V6M20 8h5M22.5 25s4.5-7.5 3-10.5c0 0-1-2.5-3-2.5s-3 2.5-3 2.5c-1.5 3 3 10.5 3 10.5zM11.5 37c5.5 3.5 15.5 3.5 21 0v-7s9-4.5 6-10.5c-4-6.5-13.5-3.5-16 4V17s-5 1-5 6 3.5 5 3.5 5v7z",
-  knight: "M 22,10 C 32.5,11 38.5,18 38,39 L 15,39 C 15,30 25,32.5 23,18",
-  rook:   "M 9,39 L 36,39 L 36,36 L 9,36 L 9,39 z M 12,36 L 12,32 L 33,32 L 33,36 L 12,36 z M 11,14 L 11,9 L 15,9 L 15,11 L 20,11 L 20,9 L 25,9 L 25,11 L 30,11 L 30,9 L 34,9 L 34,14",
-  bishop: "M 9,36 C 12.39,35.03 19.11,36.43 22.5,34 C 25.89,36.43 32.61,35.03 36,36 C 36,36 37.65,36.54 39,38 C 38.32,38.97 37.35,38.99 36,38.5 C 32.61,37.53 25.89,38.96 22.5,37.5 C 19.11,38.96 12.39,37.53 9,38.5 C 7.65,38.99 6.68,38.97 6,38 C 7.35,36.54 9,36 9,36 z M 15,32 C 17.5,34.5 27.5,34.5 30,32 C 30.5,30.5 30,30 30,30 C 30,27.5 27.5,26 27.5,26 L 22.5,10.5 L 17.5,26 C 17.5,26 15,27.5 15,30 C 15,30 14.5,30.5 15,32 z",
-  pawn:   "M 22.5,9 C 20.29,9 18.5,10.79 18.5,13 C 18.5,13.89 18.81,14.71 19.33,15.35 C 18.63,16.29 18,17.56 18,19 C 18,20.93 18.92,22.64 20.33,23.77 C 19.04,24.62 15,26.44 15,37 L 30,37 C 30,26.44 25.96,24.62 24.67,23.77 C 26.08,22.64 27,20.93 27,19 C 27,17.56 26.37,16.29 25.67,15.35 C 26.19,14.71 26.5,13.89 26.5,13 C 26.5,10.79 24.71,9 22.5,9 z",
-};
-
-/* ── Animated background board grid ────────────────────────────────────── */
-function BoardGrid() {
-  const cells = Array.from({ length: 64 }, (_, i) => i);
-  const isDark = (i: number) => Math.floor(i / 8) % 2 === i % 2;
-  return (
-    <div className="absolute inset-0 overflow-hidden pointer-events-none select-none" aria-hidden>
-      {/* Board grid */}
-      <div
-        className="absolute animate-board"
-        style={{
-          top: "50%", left: "50%",
-          width: 360, height: 360,
-          transform: "translate(-50%, -50%) rotate(12deg)",
-          display: "grid",
-          gridTemplateColumns: "repeat(8, 1fr)",
-          borderRadius: 8,
-          overflow: "hidden",
-          opacity: 0.09,
-        }}
-      >
-        {cells.map((i) => (
-          <div
-            key={i}
-            style={{
-              background: isDark(i)
-                ? "rgb(var(--ink))"
-                : "rgb(var(--teal))",
-            }}
-          />
-        ))}
-      </div>
-
-      {/* Floating pieces */}
-      <FloatPiece path={PIECE_PATHS.king}   cls="w-20 h-20 animate-float-a" style={{ top: "8%",  left: "4%"  }} />
-      <FloatPiece path={PIECE_PATHS.knight} cls="w-14 h-14 animate-float-b" style={{ top: "12%", right: "6%" }} />
-      <FloatPiece path={PIECE_PATHS.rook}   cls="w-16 h-16 animate-float-c" style={{ bottom: "18%", left: "7%"  }} />
-      <FloatPiece path={PIECE_PATHS.bishop} cls="w-12 h-12 animate-float-d" style={{ bottom: "22%", right: "5%" }} />
-      <FloatPiece path={PIECE_PATHS.pawn}   cls="w-10 h-10 animate-float-a" style={{ top: "42%",  left: "2%"  }} />
-      <FloatPiece path={PIECE_PATHS.pawn}   cls="w-10 h-10 animate-float-b" style={{ top: "38%",  right: "3%" }} />
-    </div>
-  );
-}
-
-/* ── Scrolling chain-status ticker ─────────────────────────────────────── */
+/* ── Live chain ticker ─────────────────────────────────────────────────── */
 interface FeedMove { gameId: string; ply: number; uci: string; txHash: string; finalMs: number | null }
 
-/** Real moves as they land on Arc. Each one links to its transaction. */
+/** Real moves as they become final on Arc. Each one links to its transaction. */
 function ChainTicker() {
   const [moves, setMoves] = useState<FeedMove[] | null>(null);
   useEffect(() => {
@@ -121,22 +40,20 @@ function ChainTicker() {
     return () => { alive = false; clearInterval(timer); };
   }, []);
 
-  const shell = "w-full overflow-hidden border-y-2 py-2";
-  const shellStyle = { borderColor: "rgb(var(--ink) / 0.10)", background: "rgb(var(--teal-light))" };
-  if (moves === null) return <div className={shell} style={{ ...shellStyle, height: 34 }} aria-hidden />;
+  const shell = "w-full overflow-hidden py-2.5";
+  const shellStyle: React.CSSProperties = { background: "rgb(var(--violet))", color: "#fff", borderBlock: "var(--line) solid rgb(var(--pop-shadow))" };
+  if (moves === null) return <div className={shell} style={{ ...shellStyle, height: 42 }} aria-hidden />;
   if (moves.length === 0) {
     return (
-      <div className={`${shell} text-center font-mono text-[11px] font-bold`} style={{ ...shellStyle, color: "rgb(var(--teal-deep))" }}>
-        Moves appear here the moment they are final on Arc.
+      <div className={`${shell} text-center text-[13px] font-extrabold`} style={shellStyle}>
+        Moves show up here the moment they are final on Arc.
       </div>
     );
   }
-  const label = (m: FeedMove) =>
-    `${m.uci.slice(0, 2)}→${m.uci.slice(2, 4)}${m.uci[4] ? `=${m.uci[4].toUpperCase()}` : ""}  final${m.finalMs !== null ? ` in ${(m.finalMs / 1000).toFixed(1)} s` : ""}`;
   const doubled = [...moves, ...moves]; // seamless loop
   return (
-    <div className={shell} style={shellStyle}>
-      <div className="flex gap-6 animate-chain-scroll whitespace-nowrap" style={{ width: "max-content" }}>
+    <div className={shell} style={shellStyle} aria-label="Moves just finalised on Arc">
+      <div className="animate-chain-scroll flex gap-8 whitespace-nowrap" style={{ width: "max-content" }}>
         {doubled.map((m, i) => (
           <a
             key={`${m.txHash}-${i}`}
@@ -145,10 +62,12 @@ function ChainTicker() {
             rel="noopener noreferrer"
             aria-hidden={i >= moves.length}
             tabIndex={i >= moves.length ? -1 : 0}
-            className="font-mono text-[11px] font-bold hover:underline"
-            style={{ color: "rgb(var(--teal-deep))" }}
+            className="inline-flex items-center gap-2 text-[13px] font-extrabold hover:underline"
           >
-            {label(m)}
+            <span className="h-2 w-2 rounded-full" style={{ background: "rgb(var(--mint))" }} />
+            <span className="font-display">{m.uci.slice(0, 2)}–{m.uci.slice(2, 4)}{m.uci[4] ? `=${m.uci[4].toUpperCase()}` : ""}</span>
+            <span className="font-mono text-[11px] font-medium opacity-70">{m.txHash.slice(0, 8)}…</span>
+            {m.finalMs !== null && <span style={{ color: "rgb(var(--mint))" }}>final in {(m.finalMs / 1000).toFixed(1)} s</span>}
           </a>
         ))}
       </div>
@@ -156,145 +75,236 @@ function ChainTicker() {
   );
 }
 
-/* ── Main HomeClient ────────────────────────────────────────────────────── */
-export function HomeClient({ session }: Props): React.JSX.Element {
-  const [showPlay,   setShowPlay]   = useState(false);
-  const [showHowTo,  setShowHowTo]  = useState(false);
+/* ── Saturday Cup card ─────────────────────────────────────────────────── */
+interface Cup { id: string; name: string; startsAt: string; regClose: string; status: string; prizePoolUsdc6: string; timeControl: string }
+
+function useCountdown(target: number | null): string {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  if (target === null) return "";
+  const ms = Math.max(0, target - now);
+  const d = Math.floor(ms / 86_400_000), h = Math.floor(ms / 3_600_000) % 24, m = Math.floor(ms / 60_000) % 60, s = Math.floor(ms / 1000) % 60;
+  return d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
+}
+
+function CupCard() {
+  const [cup, setCup] = useState<Cup | null | undefined>(undefined);
+  useEffect(() => {
+    fetch(`${API_BASE}/v1/tournaments`)
+      .then((r) => r.json() as Promise<{ tournaments?: Cup[] }>)
+      .then((d) => {
+        const list = d.tournaments ?? [];
+        const upcoming = list
+          .filter((t) => new Date(t.startsAt).getTime() > Date.now())
+          .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
+        setCup(upcoming[0] ?? list.find((t) => t.status === "running") ?? null);
+      })
+      .catch(() => setCup(null));
+  }, []);
+  const starts = cup ? new Date(cup.startsAt).getTime() : null;
+  const left = useCountdown(starts);
+  const prize = cup ? Number(BigInt(cup.prizePoolUsdc6 || "0")) / 1e6 : 0;
 
   return (
-    <div className="min-h-screen flex flex-col relative overflow-hidden" style={{ background: "rgb(var(--sky))" }}>
-      <BoardGrid />
-
-      {/* Nav */}
-      <header
-        className="relative z-10 flex items-center justify-between px-5 py-3 border-b-2"
-        style={{ borderColor: "rgb(var(--ink) / 0.10)", background: "rgb(var(--cloud) / 0.80)", backdropFilter: "blur(8px)" }}
-      >
-        <span className="font-display font-extrabold text-xl tracking-tight" style={{ color: "rgb(var(--ink))" }}>
-          Final Move
-        </span>
-        <div className="flex items-center gap-2">
-          <ThemeToggle />
-          {session?.user ? (
-            <>
-              <span className="text-sm font-semibold hidden sm:block" style={{ color: "rgb(var(--ink-2))" }}>
-                @{session.user.handle ?? session.user.name}
-              </span>
-              <button onClick={() => signOut()} className="pop-btn-ghost pop-btn rounded-full px-4 py-1.5 text-xs">
-                Sign out
-              </button>
-            </>
-          ) : (
-            <button onClick={() => signIn("twitter")} className="pop-btn rounded-full px-4 py-1.5 text-sm">
-              Sign in with X
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Chain ticker */}
-      <div className="relative z-10">
-        <ChainTicker />
-      </div>
-
-      {/* Hero */}
-      <main className="relative z-10 flex flex-1 flex-col items-center justify-center px-4 py-8 gap-4 max-w-sm mx-auto w-full text-center">
-
-        {/* Logo sticker card — staggered entrance */}
-        <div className="sticker-card-lg w-full px-6 py-7 animate-fade-up delay-0">
-          <div className="flex justify-center mb-3">
-            <svg viewBox="0 0 45 45" xmlns="http://www.w3.org/2000/svg" className="w-14 h-14" aria-hidden>
-              <g strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path fill="rgb(var(--teal))" stroke="rgb(var(--ink))"
-                  d="M22.5 11.63V6M20 8h5M22.5 25s4.5-7.5 3-10.5c0 0-1-2.5-3-2.5s-3 2.5-3 2.5c-1.5 3 3 10.5 3 10.5z" />
-                <path fill="rgb(var(--teal))" stroke="rgb(var(--ink))"
-                  d="M11.5 37c5.5 3.5 15.5 3.5 21 0v-7s9-4.5 6-10.5c-4-6.5-13.5-3.5-16 4V17s-5 1-5 6 3.5 5 3.5 5v7z" />
-                <path fill="none" stroke="rgb(var(--teal-light))"
-                  d="M11.5 30c5.5-3 15.5-3 21 0M11.5 33.5c5.5-3 15.5-3 21 0M11.5 37c5.5-3 15.5-3 21 0" />
-              </g>
-            </svg>
-          </div>
-          <div className="font-display text-4xl font-extrabold tracking-tight mb-2" style={{ color: "rgb(var(--ink))" }}>
-            Final Move
-          </div>
-          <p className="text-sm font-medium leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
-            Every move is a transaction on Arc.<br />Chess that lives onchain, forever.
+    <div className="sticker-card relative flex h-full flex-col gap-3 overflow-hidden p-5" style={{ background: "rgb(var(--amber))", color: "rgb(var(--candy-ink))" }}>
+      <span className="chip self-start" style={{ background: "rgb(var(--cloud))" }}>Every Saturday</span>
+      <h3 className="font-display text-[28px] font-extrabold leading-none">{cup?.name ?? "Saturday Cup"}</h3>
+      {cup === undefined ? (
+        <div className="h-10 w-40 rounded-xl" style={{ background: "rgb(var(--cloud) / 0.4)" }} aria-hidden />
+      ) : cup ? (
+        <>
+          <p className="font-display text-[34px] font-extrabold leading-none tabular-nums" aria-label={`Starts in ${left}`}>
+            {cup.status === "running" ? "Playing now" : left}
           </p>
-        </div>
-
-        {/* Stats row */}
-        <div className="grid grid-cols-3 gap-2.5 w-full animate-fade-up delay-100">
-          {[
-            { label: "Moves onchain", value: "Every" },
-            { label: "Block time",    value: "< 1s"  },
-            { label: "Gas token",     value: "USDC"  },
-          ].map((s) => (
-            <div key={s.label} className="sticker-card-sm p-3 text-center">
-              <div className="font-display text-base font-extrabold" style={{ color: "rgb(var(--teal))" }}>{s.value}</div>
-              <div className="text-[10px] mt-0.5 leading-tight font-semibold" style={{ color: "rgb(var(--ink-3))" }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* CTAs */}
-        <div className="w-full flex flex-col gap-2.5 animate-fade-up delay-200">
-          <button
-            onClick={() => setShowPlay(true)}
-            className="pop-btn w-full rounded-2xl py-3.5 font-display text-lg font-extrabold tracking-tight"
-          >
-            Play now
-          </button>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => setShowHowTo(true)}
-              className="pop-btn-ghost pop-btn rounded-2xl py-2.5 font-display text-sm font-bold"
-            >
-              How to play
-            </button>
-            <a
-              href="/play"
-              className="pop-btn-ghost pop-btn rounded-2xl py-2.5 font-display text-sm font-bold"
-            >
-              vs Human
-            </a>
-          </div>
-        </div>
-
-        {/* HvM scoreboard */}
-        <div className="w-full animate-fade-up delay-300">
-          <HvMScoreboard />
-        </div>
-
-        <div className="flex items-center gap-4 animate-fade-up delay-400">
-          <Link href="/leaderboard" className="text-sm font-bold hover:underline" style={{ color: "rgb(var(--teal))" }}>
-            Leaderboard →
-          </Link>
-          <span style={{ color: "rgb(var(--ink-3))" }}>·</span>
-          <Link href="/about" className="text-xs font-semibold hover:underline" style={{ color: "rgb(var(--ink-3))" }}>
-            About &amp; fair play
-          </Link>
-        </div>
-
-        {!session?.user && (
-          <p className="text-xs font-medium animate-fade-in delay-500" style={{ color: "rgb(var(--ink-3))" }}>
-            Sign in with X to save your rating. Guest play available below.
+          <p className="text-[14px] font-bold">
+            {cup.timeControl} knockout{prize > 0 ? ` · ${prize.toLocaleString()} USDC in prizes, paid onchain` : " · free to enter"}
           </p>
-        )}
-      </main>
-
-      {showPlay  && <PlayModal    session={session} onClose={() => setShowPlay(false)} />}
-      {showHowTo && <HowToPlayModal                 onClose={() => setShowHowTo(false)} />}
+        </>
+      ) : (
+        <p className="text-[15px] font-bold">No Cup is scheduled right now. Check back soon.</p>
+      )}
+      <Link href="/cup" className="pop-btn pop-btn-ghost mt-auto self-start px-5 text-[15px]">
+        {cup && cup.status !== "running" ? "Enter the Cup" : "See the Cup"}
+      </Link>
     </div>
   );
 }
 
-/* ── Play modal ─────────────────────────────────────────────────────────── */
+/* ── Ways to play ──────────────────────────────────────────────────────── */
+function WayCard({ tone, tilt, title, body, href, onClick, cta, art }: {
+  tone: string; tilt: number; title: string; body: string; href?: string; onClick?: () => void; cta: string; art: React.ReactNode;
+}) {
+  const cls = "sticker-card group flex min-w-0 flex-col gap-3 p-5 text-left transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 hover:shadow-[6px_6px_0_rgb(var(--pop-shadow))]";
+  const style = { transform: `rotate(${tilt}deg)` };
+  const inner = (
+    <>
+      <div className="flex h-16 items-center gap-1 overflow-hidden rounded-2xl px-3" style={{ background: `rgb(var(${tone}) / 0.22)`, border: "2px solid rgb(var(--ink))" }}>{art}</div>
+      <h3 className="font-display text-[22px] font-extrabold leading-tight" style={{ color: "rgb(var(--ink))" }}>{title}</h3>
+      <p className="text-[15px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>{body}</p>
+      <span className="mt-auto text-[14px] font-extrabold" style={{ color: "rgb(var(--violet))" }}>{cta} →</span>
+    </>
+  );
+  return onClick
+    ? <button type="button" onClick={onClick} className={cls} style={style}>{inner}</button>
+    : <Link href={href ?? "/"} className={cls} style={style}>{inner}</Link>;
+}
+
+/* ── Page ──────────────────────────────────────────────────────────────── */
+export function HomeClient({ session }: Props): React.JSX.Element {
+  const [showPlay, setShowPlay] = useState(false);
+  const [showHowTo, setShowHowTo] = useState(false);
+  const signedIn = !!session?.user;
+
+  return (
+    <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
+      <SiteHeader />
+
+      <main className="flex flex-col">
+        {/* Hero */}
+        <section className="mx-auto grid w-full max-w-[1120px] grid-cols-1 items-center gap-10 px-4 pb-12 pt-8 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,500px)] lg:pt-14">
+          <div className="flex flex-col items-start gap-5 animate-fade-up">
+            <span className="chip" style={{ background: "rgb(var(--amber))", color: "rgb(var(--candy-ink))" }}>
+              <span className="h-2 w-2 rounded-full" style={{ background: "rgb(var(--ink))" }} /> Live on Arc testnet
+            </span>
+            <h1 className="font-display font-extrabold" style={{ fontSize: "clamp(44px, 6.4vw, 78px)", lineHeight: 0.98, color: "rgb(var(--ink))" }}>
+              Chess where every move is{" "}
+              <span
+                className="inline-block px-3"
+                style={{
+                  background: "rgb(var(--violet))",
+                  color: "#fff",
+                  border: "var(--line) solid rgb(var(--ink))",
+                  borderRadius: "var(--r)",
+                  boxShadow: "5px 5px 0 rgb(var(--pop-shadow))",
+                  transform: "rotate(-2.5deg)",
+                }}
+              >
+                final
+              </span>
+            </h1>
+            <p className="max-w-[520px] text-[18px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
+              Play house bots, people or AI agents. Each move is a real transaction on Arc from the mover&apos;s own wallet, final in seconds, with no wallet popups.
+            </p>
+            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
+              <button type="button" onClick={() => setShowPlay(true)} className="pop-btn min-h-[56px] px-8 font-display text-[20px]">
+                Play now
+              </button>
+              <Link href="/play" className="pop-btn pop-btn-ghost min-h-[56px] px-6 text-[16px]">
+                Play a person
+              </Link>
+            </div>
+            <p className="text-[14px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>
+              {signedIn
+                ? "You are signed in, so your games are rated."
+                : <>No account needed for the bots. <button type="button" onClick={() => signIn("twitter")} className="underline decoration-2 underline-offset-2" style={{ color: "rgb(var(--violet))" }}>Sign in with X</button> to play people and keep a rating.</>}
+              {" "}
+              <button type="button" onClick={() => setShowHowTo(true)} className="underline decoration-2 underline-offset-2" style={{ color: "rgb(var(--ink-2))" }}>How it works</button>
+            </p>
+          </div>
+
+          <div className="sticker-card-lg w-full p-4 sm:p-5 animate-fade-up" style={{ animationDelay: "120ms" }}>
+            <HeroBoard />
+          </div>
+        </section>
+
+        <ChainTicker />
+
+        {/* Ways to play */}
+        <section className="mx-auto w-full max-w-[1120px] px-4 pt-14 sm:px-6" aria-labelledby="ways">
+          <h2 id="ways" className="mb-6 font-display font-extrabold" style={{ fontSize: "clamp(32px, 4.4vw, 50px)", lineHeight: 1.02, color: "rgb(var(--ink))" }}>
+            Three ways to play
+          </h2>
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+            <WayCard
+              tone="--mint" tilt={-1.2} onClick={() => setShowPlay(true)} cta="Pick a bot"
+              title="House bots"
+              body="Five bots from Pawnderer to GrandBot. Start in seconds, no account needed."
+              art={BOTS.map((b) => <BotAvatar key={b.id} botId={b.id} className="h-11 w-11" />)}
+            />
+            <WayCard
+              tone="--violet" tilt={0.8} href="/play" cta="Find a game"
+              title="People"
+              body="Get matched by rating, or send a friend a one-time challenge link. Every game is rated."
+              art={<span className="font-display text-[26px] font-extrabold" style={{ color: "rgb(var(--violet))" }}>1500 ⇄ 1520</span>}
+            />
+            <WayCard
+              tone="--cyan" tilt={-0.6} href="/agents" cta="Connect an agent"
+              title="AI agents"
+              body="Bring your own agent over WebSocket, REST or MCP. It gets its own wallet and plays in the Open class."
+              art={<span className="font-mono text-[14px] font-medium" style={{ color: "rgb(var(--ink))" }}>{"{ \"type\": \"move\", \"uci\": \"e2e4\" }"}</span>}
+            />
+          </div>
+        </section>
+
+        {/* Cup and the scoreboard */}
+        <section className="mx-auto grid w-full max-w-[1120px] grid-cols-1 gap-6 px-4 pt-14 sm:px-6 md:grid-cols-2">
+          <CupCard />
+          <div className="flex flex-col gap-3">
+            <HvMScoreboard />
+            <p className="px-1 text-[14px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
+              Every rated game between a person and a machine counts toward the scoreboard. Engines and agents play in the Open class; the Human class is for people only.
+            </p>
+          </div>
+        </section>
+      </main>
+
+      <SiteFooter />
+
+      {showPlay && <PlayModal session={session} onClose={() => setShowPlay(false)} />}
+      {showHowTo && <HowItWorks onClose={() => setShowHowTo(false)} onPlay={() => { setShowHowTo(false); setShowPlay(true); }} />}
+    </div>
+  );
+}
+
+/* ── Modal shell ───────────────────────────────────────────────────────── */
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = ""; prev?.focus(); };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-4"
+      style={{ background: "rgb(var(--scrim) / 0.55)", animation: "fade-in 160ms ease both" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="sticker-card-lg flex max-h-[92vh] w-full max-w-[440px] flex-col"
+        style={{ animation: "pop-in 240ms var(--spring) both" }}
+      >
+        <div className="flex items-center justify-between px-5 pb-2 pt-5">
+          <h2 className="font-display text-[26px] font-extrabold leading-none" style={{ color: "rgb(var(--ink))" }}>{title}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="grid h-9 w-9 place-items-center rounded-full text-lg font-extrabold"
+            style={{ border: "2px solid rgb(var(--ink))", color: "rgb(var(--ink))", background: "rgb(var(--sky-2))" }}
+          >×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* ── Play modal ────────────────────────────────────────────────────────── */
 function PlayModal({ session, onClose }: { session: Session | null; onClose: () => void }): React.JSX.Element {
   const router = useRouter();
-  const [botId,   setBotId]   = useState<string>("bot_1");
-  const [timeCtl, setTimeCtl] = useState<string>("3+2");
+  const [botId, setBotId] = useState<string>("bot_1");
+  const [timeCtl, setTimeCtl] = useState<string>("5+3");
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const handlePlay = async () => {
     setLoading(true); setError(null);
@@ -302,8 +312,8 @@ function PlayModal({ session, onClose }: { session: Session | null; onClose: () 
       const res = await apiFetch("/v1/games", {
         method: "POST",
         body: JSON.stringify({
-          opponentId:   botId,
-          timeControl:  timeCtl,
+          opponentId: botId,
+          timeControl: timeCtl,
           playerHandle: session?.user?.handle ?? session?.user?.name ?? "Guest",
           playerAvatar: session?.user?.image ?? undefined,
         }),
@@ -318,304 +328,112 @@ function PlayModal({ session, onClose }: { session: Session | null; onClose: () 
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
-      style={{ background: "rgb(var(--scrim) / 0.55)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div
-        className="sticker-card-lg w-full max-w-sm animate-[drop-in_0.2s_ease-out]"
-        style={{ background: "rgb(var(--cloud))" }}
-      >
-        <div className="flex items-center justify-between px-5 py-4 border-b-2" style={{ borderColor: "rgb(var(--ink) / 0.10)" }}>
-          <span className="font-display font-extrabold text-base" style={{ color: "rgb(var(--ink))" }}>New game</span>
-          <button
-            onClick={onClose}
-            className="rounded-full h-7 w-7 flex items-center justify-center text-sm font-extrabold border-2 transition-all hover:scale-110"
-            style={{ borderColor: "rgb(var(--ink))", color: "rgb(var(--ink))", background: "rgb(var(--sky-2))" }}
-          >×</button>
+    <Modal title="Play a bot" onClose={onClose}>
+      <div className="flex flex-col gap-5 overflow-y-auto px-5 pb-5 pt-2">
+        <div role="radiogroup" aria-label="Opponent" className="flex flex-col gap-2">
+          {BOTS.map((bot) => {
+            const on = botId === bot.id;
+            return (
+              <button
+                key={bot.id}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => setBotId(bot.id)}
+                className="flex items-center gap-3 rounded-[var(--r)] px-3 py-2.5 text-left transition-[transform,box-shadow] duration-150"
+                style={{
+                  background: on ? "rgb(var(--violet-light))" : "rgb(var(--cloud-2))",
+                  border: `2px solid rgb(var(--ink) / ${on ? 1 : 0.18})`,
+                  boxShadow: on ? "3px 3px 0 rgb(var(--pop-shadow))" : "none",
+                  transform: on ? "translate(-1px,-1px)" : undefined,
+                }}
+              >
+                <BotAvatar botId={bot.id} className="h-11 w-11 shrink-0" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-display text-[18px] font-extrabold leading-tight" style={{ color: "rgb(var(--ink))" }}>{bot.name}</span>
+                  <span className="block text-[13px] font-semibold" style={{ color: "rgb(var(--ink-2))" }}>{bot.desc}</span>
+                </span>
+                <span className="chip shrink-0 tabular-nums" style={{ background: on ? "rgb(var(--violet))" : "rgb(var(--cloud))", color: on ? "#fff" : "rgb(var(--ink-2))" }}>{bot.elo}</span>
+              </button>
+            );
+          })}
         </div>
 
-        <div className="p-5 flex flex-col gap-5">
-          {/* Time control */}
-          <div>
-            <p className="text-[11px] font-extrabold uppercase tracking-widest mb-2.5 font-display" style={{ color: "rgb(var(--ink-3))" }}>
-              Time control
-              <button
-                onClick={() => {/* inline tooltip handled below */}}
-                className="ml-2 inline-flex items-center justify-center rounded-full w-4 h-4 text-[9px] font-extrabold border"
-                style={{ borderColor: "rgb(var(--ink-3))", color: "rgb(var(--ink-3))", verticalAlign: "middle" }}
-                title="Minutes on clock + seconds added back after each move"
-              >?</button>
-            </p>
-            <p className="text-[10px] font-semibold mb-2" style={{ color: "rgb(var(--ink-3))" }}>
-              Minutes + seconds added per move
-            </p>
-            <div className="grid grid-cols-3 gap-2">
-              {TIME_CONTROLS.map((tc) => (
+        <div>
+          <p className="mb-2 text-[13px] font-extrabold" style={{ color: "rgb(var(--ink-2))" }}>
+            Time control <span className="font-semibold" style={{ color: "rgb(var(--ink-3))" }}>· minutes, plus seconds back after each move</span>
+          </p>
+          <div role="radiogroup" aria-label="Time control" className="grid grid-cols-3 gap-1 rounded-full p-1" style={{ background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }}>
+            {TIME_CONTROLS.map((tc) => {
+              const on = timeCtl === tc.id;
+              return (
                 <button
                   key={tc.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
                   onClick={() => setTimeCtl(tc.id)}
-                  className="rounded-2xl py-2.5 text-center text-sm font-bold border-2 transition-all"
-                  style={{
-                    borderColor: timeCtl === tc.id ? "rgb(var(--teal))"        : "rgb(var(--ink) / 0.15)",
-                    background:  timeCtl === tc.id ? "rgb(var(--teal-light))"  : "rgb(var(--cloud-2))",
-                    color:       timeCtl === tc.id ? "rgb(var(--teal-deep))"   : "rgb(var(--ink))",
-                    boxShadow:   timeCtl === tc.id ? "3px 3px 0 rgb(var(--teal-light))" : "none",
-                  }}
+                  className="min-h-[44px] rounded-full leading-tight"
+                  style={{ background: on ? "rgb(var(--cloud))" : "transparent", boxShadow: on ? "0 0 0 2px rgb(var(--ink))" : undefined, color: "rgb(var(--ink))" }}
                 >
-                  <div className="font-display font-extrabold">{tc.label}</div>
-                  <div className="text-[10px] font-semibold opacity-70 mt-0.5">{tc.desc}</div>
+                  <span className="block font-display text-[16px] font-extrabold">{tc.label}</span>
+                  <span className="block text-[11px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>{tc.desc}</span>
                 </button>
-              ))}
-            </div>
+              );
+            })}
           </div>
-
-          {/* Bot level */}
-          <div>
-            <p className="text-[11px] font-extrabold uppercase tracking-widest mb-2.5 font-display" style={{ color: "rgb(var(--ink-3))" }}>
-              Play against
-            </p>
-            <div className="flex flex-col gap-1.5">
-              {BOT_LEVELS.map((bot) => (
-                <button
-                  key={bot.id}
-                  onClick={() => setBotId(bot.id)}
-                  className="flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-left border-2 transition-all"
-                  style={{
-                    borderColor: botId === bot.id ? "rgb(var(--teal))"       : "rgb(var(--ink) / 0.12)",
-                    background:  botId === bot.id ? "rgb(var(--teal-light))" : "rgb(var(--cloud-2))",
-                    boxShadow:   botId === bot.id ? "3px 3px 0 rgb(var(--teal-light))" : "none",
-                  }}
-                >
-                  <BotAvatar className="w-9 h-9 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-bold font-display" style={{ color: "rgb(var(--ink))" }}>{bot.name}</div>
-                    <div className="text-[11px] font-semibold" style={{ color: "rgb(var(--ink-3))" }}>{bot.desc}</div>
-                  </div>
-                  <span className="chip text-[10px] shrink-0" style={{ color: "rgb(var(--ink-3))" }}>{bot.elo}</span>
-                  {botId === bot.id && (
-                    <span className="chip ml-1" style={{ background: "rgb(var(--teal))", color: "#fff", borderColor: "rgb(var(--ink))" }}>
-                      Selected
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {error && (
-            <p className="rounded-2xl px-3.5 py-2.5 text-xs font-bold border-2"
-              style={{ borderColor: "rgb(var(--danger))", background: "rgb(var(--danger) / 0.08)", color: "rgb(var(--danger))" }}>
-              {error}
-            </p>
-          )}
-
-          <button
-            onClick={() => { void handlePlay(); }}
-            disabled={loading}
-            className="pop-btn w-full rounded-2xl py-3 font-display text-base font-extrabold"
-          >
-            {loading ? "Creating…" : "Play"}
-          </button>
         </div>
+
+        {error && (
+          <p className="rounded-[var(--r)] px-3.5 py-2.5 text-[14px] font-bold" role="alert"
+            style={{ border: "2px solid rgb(var(--coral))", background: "rgb(var(--coral) / 0.1)", color: "rgb(var(--ink))" }}>
+            {error}
+          </p>
+        )}
+
+        <button type="button" data-autofocus onClick={() => { void handlePlay(); }} disabled={loading} className="pop-btn min-h-[54px] w-full font-display text-[19px]">
+          {loading ? "Setting up the board…" : `Play ${BOTS.find((b) => b.id === botId)?.name ?? ""}`}
+        </button>
+        {!session?.user && (
+          <p className="-mt-2 text-center text-[13px] font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+            You will play as a guest. Guest games are not rated.
+          </p>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }
 
-/* ── How To Play modal ──────────────────────────────────────────────────── */
-const HOW_TO_STEPS = [
-  {
-    num: "1",
-    title: "Pick a bot and time control",
-    body: "Choose your opponent (Pawnderer is easiest) and how long each player gets. 3+2 means 3 minutes on the clock, plus 2 seconds added after every move you make.",
-    accent: "--teal",
-  },
-  {
-    num: "2",
-    title: "Move a piece",
-    body: "Tap a piece to see its legal moves highlighted in teal. Tap a highlighted square to move there. You play as white or black — assigned randomly.",
-    accent: "--mint",
-  },
-  {
-    num: "3",
-    title: "Your move goes onchain",
-    body: "Every move is submitted as a transaction on Arc — a blockchain where USDC is the gas token. The chain rail on the right shows: queued → sent → confirmed.",
-    accent: "--amber",
-  },
-  {
-    num: "4",
-    title: "Win, draw, or lose",
-    body: "Checkmate, timeout, or resignation ends the game. Your rating (TrueSkill) updates if you are signed in. Guest games are not rated.",
-    accent: "--coral",
-  },
-  {
-    num: "5",
-    title: "Sign in to keep your rating",
-    body: "Sign in with X to save your rating across sessions, appear on the leaderboard, and challenge human opponents. Guest play is always available.",
-    accent: "--sky-blue",
-  },
+/* ── How it works ──────────────────────────────────────────────────────── */
+const STEPS = [
+  { tone: "--violet", title: "Pick an opponent", body: "A house bot, a person by rating, or a friend with a challenge link. Colours are drawn at random." },
+  { tone: "--mint", title: "Make your move", body: "Tap a piece, then a highlighted square. You can also drag pieces or type a move like Nf3." },
+  { tone: "--cyan", title: "It goes onchain", body: "Your move is sent from your own wallet on Arc. The mark on the square turns grey, then cyan, then mint when it is final. The board never waits for it, and chain time never comes off your clock." },
+  { tone: "--amber", title: "Finish and verify", body: "Checkmate, time, resignation or a draw ends the game. Every move stays on Arc for anyone to check." },
 ] as const;
 
-const TIME_EXPLAINER = [
-  { label: "3 + 2", cat: "Blitz",  detail: "3 min clock · +2 s/move · Fast and tactical" },
-  { label: "5 + 3", cat: "Blitz",  detail: "5 min clock · +3 s/move · Standard online blitz" },
-  { label: "10 + 5", cat: "Rapid", detail: "10 min clock · +5 s/move · More time to think" },
-] as const;
-
-function HowToPlayModal({ onClose }: { onClose: () => void }): React.JSX.Element {
-  const [tab, setTab] = useState<"guide" | "time" | "chain">("guide");
-
+function HowItWorks({ onClose, onPlay }: { onClose: () => void; onPlay: () => void }): React.JSX.Element {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
-      style={{ background: "rgb(var(--scrim) / 0.60)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div
-        className="sticker-card-lg w-full max-w-sm max-h-[88vh] flex flex-col animate-[drop-in_0.22s_ease-out]"
-        style={{ background: "rgb(var(--cloud))" }}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b-2 shrink-0" style={{ borderColor: "rgb(var(--ink) / 0.10)" }}>
-          <span className="font-display font-extrabold text-base" style={{ color: "rgb(var(--ink))" }}>How to play</span>
-          <button
-            onClick={onClose}
-            className="rounded-full h-7 w-7 flex items-center justify-center text-sm font-extrabold border-2 transition-all hover:scale-110"
-            style={{ borderColor: "rgb(var(--ink))", color: "rgb(var(--ink))", background: "rgb(var(--sky-2))" }}
-          >×</button>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex gap-1 px-4 pt-3 pb-1 shrink-0">
-          {([["guide", "Guide"], ["time", "Time controls"], ["chain", "Onchain"]] as const).map(([id, label]) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className="rounded-full px-3 py-1 text-xs font-bold border-2 transition-all"
-              style={{
-                borderColor: tab === id ? "rgb(var(--teal))"       : "rgb(var(--ink) / 0.15)",
-                background:  tab === id ? "rgb(var(--teal-light))" : "transparent",
-                color:       tab === id ? "rgb(var(--teal-deep))"  : "rgb(var(--ink-3))",
-              }}
+    <Modal title="How it works" onClose={onClose}>
+      <ol className="flex flex-col gap-4 overflow-y-auto px-5 pb-2 pt-2">
+        {STEPS.map((s, i) => (
+          <li key={s.title} className="flex gap-3">
+            <span
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-full font-display text-[18px] font-extrabold"
+              style={{ background: `rgb(var(${s.tone}))`, color: s.tone === "--violet" ? "#fff" : "rgb(var(--candy-ink))", border: "2px solid rgb(var(--ink))" }}
             >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Content — scrollable */}
-        <div className="flex-1 overflow-y-auto px-5 py-4">
-
-          {/* ── Guide tab ── */}
-          {tab === "guide" && (
-            <ol className="flex flex-col gap-3">
-              {HOW_TO_STEPS.map((step, i) => (
-                <li
-                  key={step.num}
-                  className={`relative flex gap-3 pb-3 ${i < HOW_TO_STEPS.length - 1 ? "htpl-step" : ""}`}
-                >
-                  {/* Number bubble */}
-                  <span
-                    className="w-10 h-10 shrink-0 rounded-full border-2 flex items-center justify-center font-display font-extrabold text-sm"
-                    style={{
-                      background:  `rgb(var(${step.accent}) / 0.18)`,
-                      borderColor: `rgb(var(${step.accent}))`,
-                      color:       `rgb(var(${step.accent}))`,
-                      zIndex:      1,
-                    }}
-                  >
-                    {step.num}
-                  </span>
-                  <div className="flex-1 pt-1">
-                    <p className="font-display font-extrabold text-sm mb-1" style={{ color: "rgb(var(--ink))" }}>
-                      {step.title}
-                    </p>
-                    <p className="text-xs font-medium leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
-                      {step.body}
-                    </p>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          )}
-
-          {/* ── Time controls tab ── */}
-          {tab === "time" && (
-            <div className="flex flex-col gap-3">
-              <p className="text-xs font-semibold leading-relaxed mb-1" style={{ color: "rgb(var(--ink-2))" }}>
-                The format is <strong>minutes + increment</strong>. After each move, the increment is added back to your clock — so short moves never cost you time.
-              </p>
-              {TIME_EXPLAINER.map((tc) => (
-                <div key={tc.label} className="sticker-card-sm p-4 flex items-start gap-3">
-                  <span
-                    className="font-display font-extrabold text-lg shrink-0 w-14 text-center"
-                    style={{ color: "rgb(var(--teal))" }}
-                  >
-                    {tc.label}
-                  </span>
-                  <div>
-                    <span className="chip text-[10px] mb-1">{tc.cat}</span>
-                    <p className="text-xs font-semibold mt-1" style={{ color: "rgb(var(--ink-2))" }}>{tc.detail}</p>
-                  </div>
-                </div>
-              ))}
-              <div className="sticker-card-sm p-4" style={{ background: "rgb(var(--amber) / 0.10)", borderColor: "rgb(var(--amber))" }}>
-                <p className="text-xs font-bold" style={{ color: "rgb(var(--ink))" }}>New to chess?</p>
-                <p className="text-xs font-medium mt-1" style={{ color: "rgb(var(--ink-2))" }}>
-                  Start with 5+3 — it gives you enough time to think without games dragging on too long.
-                </p>
-              </div>
+              {i + 1}
+            </span>
+            <div>
+              <p className="font-display text-[18px] font-extrabold leading-tight" style={{ color: "rgb(var(--ink))" }}>{s.title}</p>
+              <p className="mt-0.5 text-[14px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>{s.body}</p>
             </div>
-          )}
-
-          {/* ── Onchain tab ── */}
-          {tab === "chain" && (
-            <div className="flex flex-col gap-3">
-              <p className="text-xs font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
-                Final Move runs on <strong>Arc</strong>, a blockchain where USDC is the native gas token. Every move you make is a real transaction — permanent, public, and verifiable.
-              </p>
-
-              {/* Chain rail explainer */}
-              {[
-                { state: "Queued",    color: "--teal-light", ink: "--ink-3",   desc: "Move accepted by the server. Waiting for the next block." },
-                { state: "Sent",      color: "--amber",       ink: "--candy-ink", desc: "Transaction broadcast to Arc. Waiting for confirmation." },
-                { state: "Confirmed", color: "--teal",        ink: "--cloud",   desc: "Move permanently recorded onchain. Block finalized." },
-              ].map((s) => (
-                <div key={s.state} className="sticker-card-sm p-3 flex items-start gap-3">
-                  <span
-                    className="rounded-full border-2 px-2.5 py-0.5 text-[11px] font-extrabold shrink-0 mt-0.5"
-                    style={{ background: `rgb(var(${s.color}))`, borderColor: "rgb(var(--ink))", color: `rgb(var(${s.ink}))` }}
-                  >
-                    {s.state}
-                  </span>
-                  <p className="text-xs font-medium leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
-                    {s.desc}
-                  </p>
-                </div>
-              ))}
-
-              <div className="sticker-card-sm p-4" style={{ background: "rgb(var(--teal-light))" }}>
-                <p className="text-xs font-bold mb-1" style={{ color: "rgb(var(--ink))" }}>What it costs</p>
-                <p className="text-xs font-medium" style={{ color: "rgb(var(--ink-2))" }}>
-                  Each move uses a tiny amount of USDC for gas (fractions of a cent). The referee wallet covers gas for new players — you need no wallet to play as a guest.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Footer CTA */}
-        <div className="px-5 py-4 border-t-2 shrink-0" style={{ borderColor: "rgb(var(--ink) / 0.10)" }}>
-          <button
-            onClick={onClose}
-            className="pop-btn w-full rounded-2xl py-3 font-display font-extrabold text-sm"
-          >
-            Got it — Play now
-          </button>
-        </div>
+          </li>
+        ))}
+      </ol>
+      <div className="px-5 pb-5 pt-3">
+        <button type="button" data-autofocus onClick={onPlay} className="pop-btn min-h-[50px] w-full text-[16px]">Play now</button>
       </div>
-    </div>
+    </Modal>
   );
 }

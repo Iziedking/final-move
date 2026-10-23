@@ -24,20 +24,20 @@ const mono = JetBrains_Mono({
   display: "swap",
 });
 
+const description = "Chess where every move is final on Arc. Play house bots, people or AI agents, with every move a transaction from the mover's own wallet.";
+
 export const metadata: Metadata = {
-  title: "Final Move — Every move is a transaction on Arc",
-  description: "Chess where every move is an onchain transaction on Arc.",
-  openGraph: {
-    title: "Final Move",
-    description: "Every move is a transaction on Arc.",
-    type: "website",
-  },
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"),
+  title: { default: "Final Move: chess where every move is final", template: "%s · Final Move" },
+  description,
+  openGraph: { title: "Final Move", description, type: "website", siteName: "Final Move" },
+  twitter: { card: "summary_large_image", title: "Final Move", description },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
+  themeColor: [{ media: "(prefers-color-scheme: light)", color: "#EAEDFF" }, { media: "(prefers-color-scheme: dark)", color: "#100E35" }],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }): React.JSX.Element {

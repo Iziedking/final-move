@@ -7,9 +7,8 @@ interface Props {
   params: Promise<{ id: string }>;
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { id } = await params;
-  return { title: `${id} — Final Move` };
+export function generateMetadata(): Metadata {
+  return { title: "Player profile" };
 }
 
 export default async function ProfilePage({ params }: Props): Promise<React.JSX.Element> {

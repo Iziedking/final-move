@@ -1,8 +1,16 @@
 "use client";
+/**
+ * The game screen. The board is the hero; clocks and players frame it, and a
+ * side panel holds the move list and the chain record. Every state the player
+ * can be in (first move, opponent thinking, review, offers, the end) is said in
+ * plain words in one status line, so nothing needs a manual.
+ */
 import Link from "next/link";
 import type React from "react";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { sanLine } from "@final-move/chess";
+import {
+  sanLine, parseFEN, legalMoves as engineLegalMoves, moveToUci, moveToSan, capturedValue, inCheck,
+} from "@final-move/chess";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useGameWs } from "@/lib/useGameWs";
@@ -11,9 +19,9 @@ import { PlayerBar } from "@/components/PlayerBar";
 import { Clock } from "@/components/Clock";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { explorerTx } from "@/lib/utils";
-import { API_BASE } from "@/lib/api";
-import { apiFetch, getPlayer, type Player } from "@/lib/session";
-import type { PlayerInfo, ChainRailEntry } from "@/lib/types";
+import { apiFetch, getPlayer, describeError, type Player } from "@/lib/session";
+import { sfx, isMuted, setMuted, onMutedChange } from "@/lib/sound";
+import type { PlayerInfo, ChainRailEntry, WsGameState } from "@/lib/types";
 
 interface Props {
   gameId: string;
@@ -21,21 +29,79 @@ interface Props {
   myColor?: "w" | "b";
 }
 
-// ── Confetti (CSS-only, no dep) ───────────────────────────────────────────────
-function Confetti() {
-  const colours = ["var(--teal)", "var(--amber)", "var(--mint)", "var(--coral)", "var(--sky-blue)"];
+type Side = "w" | "b";
+
+const REASON: Record<string, string> = {
+  checkmate: "by checkmate",
+  resignation: "by resignation",
+  timeout: "on time",
+  abandon: "by abandonment",
+  stalemate: "by stalemate",
+  repetition: "by repetition",
+  "fifty-move": "by the fifty-move rule",
+  "insufficient-material": "by insufficient material",
+  agreement: "by agreement",
+  aborted: "Nobody moved in time, so the game was called off. Ratings are unchanged.",
+};
+
+// ── Small pieces ──────────────────────────────────────────────────────────────
+
+function IconButton({ label, onClick, pressed, children }: {
+  label: string; onClick: () => void; pressed?: boolean; children: React.ReactNode;
+}) {
   return (
-    <div className="pointer-events-none fixed inset-0 z-[999] overflow-hidden" aria-hidden>
-      {Array.from({ length: 40 }).map((_, i) => (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={pressed}
+      title={label}
+      className="grid h-9 w-9 place-items-center rounded-full transition-transform hover:-translate-x-px hover:-translate-y-px active:translate-x-px active:translate-y-px"
+      style={{
+        background: pressed ? "rgb(var(--violet-light))" : "rgb(var(--cloud))",
+        color: "rgb(var(--ink))",
+        border: "2px solid rgb(var(--ink))",
+        boxShadow: "2px 2px 0 rgb(var(--pop-shadow))",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SoundIcon({ muted }: { muted: boolean }) {
+  return (
+    <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3.5 8h2.8L10 5v10l-3.7-3H3.5z" fill="currentColor" />
+      {muted ? <path d="M13 8l4 4M17 8l-4 4" /> : <path d="M13 7.5a3.5 3.5 0 0 1 0 5M15.2 5.5a6.5 6.5 0 0 1 0 9" />}
+    </svg>
+  );
+}
+
+function FlipIcon() {
+  return (
+    <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 3v12M6 15l-3-3M6 15l3-3M14 17V5M14 5l-3 3M14 5l3 3" />
+    </svg>
+  );
+}
+
+function Confetti() {
+  const colours = ["--violet", "--amber", "--mint", "--coral", "--cyan"];
+  return (
+    <div className="confetti pointer-events-none fixed inset-0 z-[60] overflow-hidden" aria-hidden>
+      {Array.from({ length: 44 }).map((_, i) => (
         <span
           key={i}
-          className="absolute top-0 rounded-sm"
+          className="absolute top-0"
           style={{
-            left: `${(i * 2.5) % 100}%`,
-            width: `${6 + (i % 5)}px`,
-            height: `${10 + (i % 7)}px`,
-            background: `rgb(${colours[i % colours.length]})`,
-            animation: `confetti-fall ${1.2 + (i % 4) * 0.3}s ${(i % 8) * 0.12}s cubic-bezier(.25,.46,.45,.94) forwards`,
+            left: `${(i * 37) % 100}%`,
+            width: `${7 + (i % 4) * 2}px`,
+            height: `${9 + (i % 5) * 2}px`,
+            borderRadius: i % 3 === 0 ? "999px" : "3px",
+            border: "1.5px solid rgb(var(--ink))",
+            background: `rgb(var(${colours[i % colours.length]}))`,
+            animation: `confetti-fall ${1.4 + (i % 4) * 0.35}s ${(i % 9) * 0.09}s cubic-bezier(.25,.46,.45,.94) forwards`,
           }}
         />
       ))}
@@ -43,267 +109,302 @@ function Confetti() {
   );
 }
 
-// ── Chain rail ────────────────────────────────────────────────────────────────
-const STATE_DOT: Record<string, string> = {
-  queued:   "rgb(var(--ink-3))",
-  sent:     "rgb(var(--amber))",
-  complete: "rgb(var(--amber))",
-  final:    "rgb(var(--teal))",
-};
-const STATE_LABEL: Record<string, string> = {
-  queued:   "queued",
-  sent:     "sent",
-  complete: "confirming",
-  final:    "final",
-};
+// ── Move list ─────────────────────────────────────────────────────────────────
 
-function ChainRailPanel({ entries, sans }: { entries: ChainRailEntry[]; sans: string[] }) {
-  const finalCount = entries.filter((e) => e.state === "final").length;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-2 mb-0.5">
-        <span
-          className="h-2 w-2 rounded-full flex-shrink-0"
-          style={{ background: finalCount > 0 ? "rgb(var(--teal))" : "rgb(var(--ink-3))" }}
-        />
-        <span className="text-[10px] font-extrabold font-display uppercase tracking-widest" style={{ color: "rgb(var(--ink-3))" }}>
-          {finalCount}/{entries.length} on Arc
-        </span>
-      </div>
-      <div className="max-h-[260px] overflow-y-auto flex flex-col gap-1 pr-0.5">
-        {entries.map((e) => (
-          <div
-            key={e.ply}
-            className="flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11px] border"
-            style={{
-              background:  "rgb(var(--cloud))",
-              borderColor: e.state === "final" ? "rgb(var(--teal) / 0.5)" : "rgb(var(--ink) / 0.10)",
-            }}
-          >
-            <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ background: STATE_DOT[e.state] }} />
-            <span className="font-bold w-5 shrink-0 tabular-nums font-display" style={{ color: "rgb(var(--ink))" }}>
-              {e.ply}.
-            </span>
-            <span className="mono shrink-0 font-semibold flex-1" style={{ color: "rgb(var(--ink-2))" }}>
-              {sans[e.ply - 1] ?? e.san ?? "—"}
-            </span>
-            <span className="ml-auto text-[9px] font-bold shrink-0 uppercase" style={{ color: STATE_DOT[e.state] }}>
-              {STATE_LABEL[e.state]}
-            </span>
-            {e.txHash && (
-              <a
-                href={explorerTx(e.txHash)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mono text-[9px] shrink-0 hover:opacity-70 transition-opacity"
-                style={{ color: "rgb(var(--teal))" }}
-                title={e.txHash}
-              >
-                ↗
-              </a>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── SAN move list ─────────────────────────────────────────────────────────────
-interface SanMoveListProps {
-  chainRail: ChainRailEntry[];
-  /** SAN for each ply, index 0 = ply 1. */
-  sans: string[];
-  reviewPly: number | null;
-  onReviewPly: (ply: number | null) => void;
-}
-
-function SanMoveList({ chainRail, sans, reviewPly, onReviewPly }: SanMoveListProps) {
-  const listRef = useRef<HTMLDivElement>(null);
-  // Sort ascending
-  const sorted = [...chainRail].sort((a, b) => a.ply - b.ply);
-  // Group into pairs: [[w,b], [w,b], ...]
-  const pairs: Array<[ChainRailEntry, ChainRailEntry | null]> = [];
-  for (let i = 0; i < sorted.length; i += 2) {
-    pairs.push([sorted[i]!, sorted[i + 1] ?? null]);
-  }
+function MoveList({ sans, livePly, reviewPly, onPick }: {
+  sans: string[]; livePly: number; reviewPly: number | null; onPick: (ply: number) => void;
+}) {
+  const listRef = useRef<HTMLOListElement>(null);
+  const current = reviewPly ?? livePly;
 
   useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight;
-    }
-  }, [sorted.length]);
+    if (reviewPly !== null) return;
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+  }, [sans.length, reviewPly]);
 
-  if (sorted.length === 0) {
+  if (sans.length === 0) {
     return (
-      <div className="flex items-center justify-center py-4">
-        <span className="text-xs font-semibold" style={{ color: "rgb(var(--ink-3))" }}>No moves yet</span>
-      </div>
+      <p className="px-1 py-6 text-center text-sm font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+        Moves appear here as they are played.
+      </p>
     );
   }
 
-  return (
-    <div ref={listRef} className="overflow-y-auto max-h-[120px] sm:max-h-[180px]">
-      {reviewPly !== null && (
-        <div className="sticky top-0 flex justify-end pb-1" style={{ background: "rgb(var(--cloud))" }}>
-          <button
-            onClick={() => onReviewPly(null)}
-            className="chip text-[9px]"
-            style={{ background: "rgb(var(--teal))", color: "#fff", borderColor: "rgb(var(--ink))" }}
-          >
-            Back to live
-          </button>
-        </div>
-      )}
-      <div className="flex flex-col gap-0.5">
-        {pairs.map(([white, black], pairIdx) => (
-          <div key={pairIdx} className="flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px]">
-            <span
-              className="w-5 shrink-0 font-bold tabular-nums mono"
-              style={{ color: "rgb(var(--ink-3))" }}
-            >
-              {pairIdx + 1}.
-            </span>
-            {[white, black].map((m, j) => {
-              if (!m) return <span key={j} className="flex-1" />;
-              const isCurrent = reviewPly === m.ply;
-              return (
-                <button
-                  key={j}
-                  onClick={() => onReviewPly(isCurrent ? null : m.ply)}
-                  className="flex-1 text-left rounded px-1.5 py-0.5 mono font-semibold transition-colors"
-                  style={{
-                    background:  isCurrent ? "rgb(var(--teal-light))" : "transparent",
-                    color:       isCurrent ? "rgb(var(--teal-deep))"  : "rgb(var(--ink-2))",
-                    fontWeight:  isCurrent ? 700 : 600,
-                    borderRadius: "6px",
-                  }}
-                  title={`Ply ${m.ply} — ${STATE_LABEL[m.state]}`}
-                >
-                  {sans[m.ply - 1] ?? m.san ?? m.ply}
-                </button>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+  const rows: Array<[number, string, string | undefined]> = [];
+  for (let i = 0; i < sans.length; i += 2) rows.push([i / 2 + 1, sans[i]!, sans[i + 1]]);
 
-// ── End screen ────────────────────────────────────────────────────────────────
-function EndScreen({
-  result, reason, myColor, explorerHash, plyCount, onRematch, rematchLoading,
-  rematchAvailable,
-}: {
-  result?: string;
-  reason?: string;
-  myColor: "w" | "b" | null;
-  explorerHash?: string;
-  plyCount: number;
-  onRematch: () => void;
-  rematchLoading: boolean;
-  rematchAvailable: boolean;
-}) {
-  const won  = (result === "white" && myColor === "w") || (result === "black" && myColor === "b");
-  const drew = result === "draw";
-  const lost = !won && !drew && result !== "aborted";
-
-  const label = result === "aborted" ? "Game aborted"
-    : drew     ? "Draw"
-    : won      ? "You won"
-    : lost     ? "You lost"
-    : result === "white" ? "White wins" : "Black wins";
-
-  const stampColor = result === "aborted" ? "rgb(var(--ink-3))"
-    : drew  ? "rgb(var(--draw))"
-    : won   ? "rgb(var(--teal))"
-    :          "rgb(var(--danger))";
-
-  return (
-    <div
-      className="sticker-card-lg w-full p-6 text-center"
-      style={{ animation: "drop-in 0.25s ease-out" }}
-    >
-      {/* Result stamp */}
-      <div
-        className="inline-flex items-center justify-center rounded-2xl border-2 px-6 py-2 font-display text-2xl font-extrabold mb-3"
+  const cell = (ply: number, san: string | undefined) => {
+    if (!san) return <span />;
+    const on = ply === current;
+    return (
+      <button
+        type="button"
+        onClick={() => onPick(ply)}
+        aria-current={on ? "step" : undefined}
+        className="rounded-lg px-2 py-1 text-left font-display text-[15px] font-bold leading-tight transition-colors"
         style={{
-          background: stampColor,
-          color: "#fff",
-          borderColor: "rgb(var(--ink))",
-          boxShadow: "4px 4px 0 rgb(var(--pop-shadow))",
+          background: on ? "rgb(var(--violet))" : "transparent",
+          color: on ? "#fff" : "rgb(var(--ink))",
         }}
       >
-        {label}
+        {san}
+      </button>
+    );
+  };
+
+  return (
+    <ol ref={listRef} className="grid max-h-[280px] grid-cols-[2.25rem_1fr_1fr] gap-x-1 gap-y-0.5 overflow-y-auto pr-1 lg:max-h-[360px]" aria-label="Moves">
+      {rows.map(([n, w, b]) => (
+        <li key={n} className="contents">
+          <span className="self-center text-right text-[12px] font-bold tabular-nums" style={{ color: "rgb(var(--ink-3))" }}>{n}.</span>
+          {cell(n * 2 - 1, w)}
+          {cell(n * 2, b)}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+// ── Chain record ──────────────────────────────────────────────────────────────
+
+const STATE: Record<ChainRailEntry["state"], { dot: string; label: string }> = {
+  queued:   { dot: "var(--ink-3)", label: "Queued" },
+  sent:     { dot: "var(--cyan)",  label: "Sent" },
+  complete: { dot: "var(--cyan)",  label: "Confirming" },
+  final:    { dot: "var(--mint)",  label: "Final" },
+};
+
+function ChainRecord({ entries, sans, plyCount }: { entries: ChainRailEntry[]; sans: string[]; plyCount: number }) {
+  const rows = [...entries].sort((a, b) => b.ply - a.ply);
+  const finalCount = entries.filter((e) => e.state === "final").length;
+  const pct = plyCount === 0 ? 0 : Math.round((finalCount / plyCount) * 100);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <p className="font-display text-[15px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>
+          {finalCount} of {plyCount} {plyCount === 1 ? "move" : "moves"} final on Arc
+        </p>
+        <div className="mt-1.5 h-3 overflow-hidden rounded-full" style={{ border: "2px solid rgb(var(--ink))", background: "rgb(var(--cloud-2))" }}>
+          <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${pct}%`, background: "rgb(var(--mint))" }} />
+        </div>
       </div>
 
-      {reason && (
-        <p className="text-sm font-semibold mb-3 capitalize" style={{ color: "rgb(var(--ink-2))" }}>
-          {reason.replace(/-/g, " ")}
+      {rows.length === 0 ? (
+        <p className="py-4 text-center text-sm font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+          Each move becomes a transaction from the mover&apos;s own wallet.
         </p>
+      ) : (
+        <ul className="flex max-h-[280px] flex-col gap-1 overflow-y-auto pr-1 lg:max-h-[320px]" aria-label="Moves on Arc">
+          {rows.map((e) => {
+            const st = STATE[e.state];
+            return (
+              <li key={e.ply} className="flex items-center gap-2 rounded-xl px-2 py-1.5" style={{ background: "rgb(var(--cloud-2))" }}>
+                <span className="w-6 text-right text-[12px] font-bold tabular-nums" style={{ color: "rgb(var(--ink-3))" }}>{e.ply}</span>
+                <span className="min-w-0 flex-1 truncate font-display text-[14px] font-bold" style={{ color: "rgb(var(--ink))" }}>
+                  {sans[e.ply - 1] ?? e.san}
+                </span>
+                <span className="inline-flex items-center gap-1 text-[11px] font-extrabold" style={{ color: "rgb(var(--ink-2))" }}>
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: `rgb(${st.dot})`, border: "1.5px solid rgb(var(--ink))" }} />
+                  {st.label}
+                  {e.state === "final" && (e.finalMs ?? 0) > 0 && (
+                    <span className="tabular-nums" style={{ color: "rgb(var(--ink-3))" }}>{((e.finalMs ?? 0) / 1000).toFixed(1)} s</span>
+                  )}
+                </span>
+                {e.txHash ? (
+                  <a
+                    href={explorerTx(e.txHash)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Move ${e.ply} on the Arc explorer`}
+                    className="grid h-7 w-7 place-items-center rounded-lg font-bold transition-colors hover:bg-[rgb(var(--violet-light))]"
+                    style={{ color: "rgb(var(--violet))" }}
+                  >
+                    ↗
+                  </a>
+                ) : <span className="h-7 w-7" />}
+              </li>
+            );
+          })}
+        </ul>
       )}
 
-      {result !== "aborted" && (
-        <p className="text-sm font-medium mb-4" style={{ color: "rgb(var(--ink-2))" }}>
-          <strong style={{ color: "rgb(var(--ink))" }}>{plyCount} moves</strong> sealed on Arc.
-          Every one is permanent.
-        </p>
-      )}
+      <p className="text-[12px] font-semibold leading-snug" style={{ color: "rgb(var(--ink-3))" }}>
+        The board never waits for the chain, and chain time never comes off your clock.
+      </p>
+    </div>
+  );
+}
 
-      <div className="flex flex-col gap-2.5">
-        {explorerHash && (
-          <a
-            href={explorerTx(explorerHash)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="pop-btn w-full rounded-2xl py-2.5 text-sm font-bold"
-          >
-            View on Arc Explorer →
-          </a>
+// ── End of game ───────────────────────────────────────────────────────────────
+
+function EndCard({
+  gs, myColor, delta, finalCount, lastHash, rematch, onRematch, onHide,
+}: {
+  gs: WsGameState;
+  myColor: Side | null;
+  delta: number | null;
+  finalCount: number;
+  lastHash?: string;
+  rematch: { state: "idle" | "sending" | "offered" | "incoming" | "error"; error?: string; canRematch: boolean };
+  onRematch: () => void;
+  onHide: () => void;
+}) {
+  const aborted = gs.status === "aborted" || gs.result === "aborted";
+  const drew = gs.result === "draw";
+  const winner: Side | null = gs.result === "white" ? "w" : gs.result === "black" ? "b" : null;
+  const won = !!myColor && winner === myColor;
+  const lost = !!myColor && !!winner && winner !== myColor;
+  const winnerName = winner === "w" ? gs.white.handle : winner === "b" ? gs.black.handle : "";
+
+  const title = aborted ? "Game called off" : drew ? "Draw" : won ? "You won" : lost ? "You lost" : `${winnerName} wins`;
+  const stamp = aborted ? "rgb(var(--cloud-2))" : drew ? "rgb(var(--cyan))" : won ? "rgb(var(--mint))" : lost ? "rgb(var(--coral))" : "rgb(var(--amber))";
+  const stampInk = lost ? "#fff" : "rgb(var(--candy-ink))";
+  const reason = gs.reason ? REASON[gs.reason] ?? gs.reason.replace(/-/g, " ") : "";
+
+  return (
+    <div
+      className="absolute inset-0 z-20 grid place-items-center p-3"
+      style={{ background: "rgb(var(--scrim) / 0.42)", borderRadius: "var(--r-lg)", animation: "fade-in 200ms ease both" }}
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="end-title"
+    >
+      <div className="sticker-card-lg w-full max-w-[360px] p-5 text-center" style={{ animation: "pop-in 260ms var(--spring) both" }}>
+        <div
+          id="end-title"
+          className="mx-auto inline-block px-5 py-1.5 font-display text-[30px] font-extrabold leading-none"
+          style={{
+            background: stamp,
+            color: stampInk,
+            border: "var(--line) solid rgb(var(--ink))",
+            borderRadius: "var(--r)",
+            boxShadow: "4px 4px 0 rgb(var(--pop-shadow))",
+            transform: "rotate(-3deg)",
+          }}
+        >
+          {title}
+        </div>
+
+        {reason && (
+          <p className="mt-3 text-[15px] font-bold" style={{ color: "rgb(var(--ink-2))" }}>
+            {aborted ? reason : reason.charAt(0).toUpperCase() + reason.slice(1)}
+          </p>
         )}
 
-        {rematchAvailable && (
-          <button
-            onClick={onRematch}
-            disabled={rematchLoading}
-            className="pop-btn-ghost pop-btn w-full rounded-2xl py-2.5 text-sm font-bold"
-          >
-            {rematchLoading ? "Sending…" : "Rematch"}
+        {!aborted && delta !== null && (
+          <p className="mt-2 inline-flex items-center gap-2 text-sm font-bold" style={{ color: "rgb(var(--ink-2))" }}>
+            Rating
+            <span
+              className="chip tabular-nums"
+              style={{ background: delta >= 0 ? "rgb(var(--mint))" : "rgb(var(--coral))", color: delta >= 0 ? "rgb(var(--candy-ink))" : "#fff" }}
+            >
+              {delta >= 0 ? "+" : ""}{delta.toFixed(1)}
+            </span>
+          </p>
+        )}
+
+        {gs.plyCount > 0 && (
+          <p className="mt-3 text-[14px] font-semibold leading-snug" style={{ color: "rgb(var(--ink-2))" }}>
+            {finalCount === gs.plyCount
+              ? <>All <strong style={{ color: "rgb(var(--ink))" }}>{gs.plyCount}</strong> moves are final on Arc.</>
+              : <><strong style={{ color: "rgb(var(--ink))" }}>{finalCount} of {gs.plyCount}</strong> moves final on Arc so far.</>}
+            {lastHash && (
+              <> <a href={explorerTx(lastHash)} target="_blank" rel="noopener noreferrer" className="font-extrabold underline decoration-2 underline-offset-2" style={{ color: "rgb(var(--violet))" }}>Verify it</a></>
+            )}
+          </p>
+        )}
+
+        {rematch.state === "incoming" && (
+          <p className="mt-3 text-sm font-extrabold" style={{ color: "rgb(var(--violet))" }}>Your opponent wants a rematch.</p>
+        )}
+        {rematch.state === "error" && (
+          <p className="mt-3 text-sm font-bold" style={{ color: "rgb(var(--coral))" }} role="alert">{rematch.error}</p>
+        )}
+
+        <div className="mt-4 flex flex-col gap-2.5">
+          {rematch.canRematch && (
+            <button
+              type="button"
+              onClick={onRematch}
+              disabled={rematch.state === "sending" || rematch.state === "offered"}
+              className="pop-btn w-full px-4 text-[15px]"
+            >
+              {rematch.state === "sending" ? "Setting up…"
+                : rematch.state === "offered" ? "Rematch offered, waiting…"
+                : rematch.state === "incoming" ? "Accept rematch"
+                : "Rematch"}
+            </button>
+          )}
+          <div className="grid grid-cols-2 gap-2.5">
+            <Link href="/" className="pop-btn pop-btn-ghost px-3 text-[14px]">New game</Link>
+            <Link href={`/g/${gs.gameId}`} className="pop-btn pop-btn-ghost px-3 text-[14px]">Replay</Link>
+          </div>
+          <button type="button" onClick={onHide} className="mt-1 text-[13px] font-extrabold underline decoration-2 underline-offset-2" style={{ color: "rgb(var(--ink-2))" }}>
+            See the final position
           </button>
-        )}
-
-        <Link href="/" className="pop-btn-ghost pop-btn w-full rounded-2xl py-2.5 text-sm font-bold text-center">
-          Home
-        </Link>
+        </div>
       </div>
     </div>
   );
 }
 
-// ── Reconnecting banner ───────────────────────────────────────────────────────
-function ReconnectingBanner({ connected }: { connected: boolean }) {
-  if (connected) return null;
+// ── Typed moves ───────────────────────────────────────────────────────────────
+
+const strip = (s: string) => s.replace(/[+#!?]/g, "").replace(/0/g, "O").trim();
+
+/** Resolve typed SAN ("Nf3", "exd5", "O-O") or UCI ("g1f3") to a legal UCI move. */
+function resolveTyped(fen: string, text: string): string | null {
+  const want = strip(text);
+  if (!want) return null;
+  const pos = parseFEN(fen);
+  for (const m of engineLegalMoves(pos)) {
+    const uci = moveToUci(m);
+    if (uci === want.toLowerCase()) return uci;
+    if (strip(moveToSan(pos, m)) === want) return uci;
+  }
+  return null;
+}
+
+function MoveInput({ fen, enabled, onMove }: { fen: string; enabled: boolean; onMove: (uci: string) => void }) {
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
   return (
-    <div
-      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-2xl border-2 px-5 py-2.5 flex items-center gap-2.5 font-display text-sm font-bold"
-      style={{
-        background:  "rgb(var(--cloud))",
-        borderColor: "rgb(var(--amber))",
-        color:       "rgb(var(--ink))",
-        boxShadow:   "3px 3px 0 rgb(var(--pop-shadow))",
+    <form
+      className="flex flex-col gap-1"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const uci = resolveTyped(fen, text);
+        if (!uci) { setError(text.trim() ? `${text.trim()} is not a legal move here.` : ""); return; }
+        setError(""); setText(""); onMove(uci);
       }}
     >
-      <span className="h-2 w-2 rounded-full animate-pulse" style={{ background: "rgb(var(--amber))" }} />
-      Reconnecting…
-    </div>
+      <label htmlFor="move-input" className="sr-only">Type a move</label>
+      <div className="flex gap-2">
+        <input
+          id="move-input"
+          value={text}
+          onChange={(e) => { setText(e.target.value); setError(""); }}
+          disabled={!enabled}
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          placeholder={enabled ? "Type a move: e4, Nf3, O-O" : "Type a move on your turn"}
+          className="min-h-[44px] min-w-0 flex-1 rounded-[var(--r)] px-3 font-display text-[15px] font-bold outline-none disabled:opacity-60"
+          style={{ background: "rgb(var(--cloud))", color: "rgb(var(--ink))", border: "2px solid rgb(var(--ink))" }}
+        />
+        <button type="submit" disabled={!enabled || !text.trim()} className="pop-btn pop-btn-ghost px-4 text-[14px]">Play</button>
+      </div>
+      {error && <p className="text-[13px] font-bold" style={{ color: "rgb(var(--coral))" }} role="alert">{error}</p>}
+    </form>
   );
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
+
 export function GameClient({ gameId, playerId: injectedPlayerId, myColor: injectedColor }: Props): React.JSX.Element {
   const { data: session, status: sessionStatus } = useSession();
-  const router   = useRouter();
+  const router = useRouter();
   const signedInId: string | null = session?.user?.id ?? null;
 
   // The API issues the identity: a user token when signed in, a guest token otherwise.
@@ -314,7 +415,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
   }, [sessionStatus, signedInId]);
   const playerId = player?.playerId ?? injectedPlayerId ?? "";
 
-  const { connected, gameState, chainRail, sendMove, drawOfferedBy, ratingDelta, rematchGameId, authError } =
+  const { connected, gameState, chainRail, sendMove, drawOffer, rematchOfferedBy, ratingDelta, rematchGameId, authError } =
     useGameWs(gameId, player?.token ?? null);
 
   // An expired or rejected token: fetch a fresh one and the socket rejoins with it.
@@ -322,284 +423,368 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
     if (authError) getPlayer(signedInId, true).then(setPlayer).catch(() => {});
   }, [authError, signedInId]);
 
-  const [legalMoves, setLegalMoves]       = useState<string[]>([]);
-  const [manualFlip, setManualFlip]       = useState(false);
-  const [showRail, setShowRail]           = useState(false);
-  const [drawSent, setDrawSent]           = useState(false);
-  const [rematchLoading, setRematchLoading] = useState(false);
-  const [reviewPly, setReviewPly]         = useState<number | null>(null);
-  const [reviewFen, setReviewFen]         = useState<string | null>(null);
+  const [manualFlip, setManualFlip] = useState(false);
+  const [tab, setTab] = useState<"moves" | "chain">("moves");
+  const [reviewPly, setReviewPly] = useState<number | null>(null);
+  const [confirmResign, setConfirmResign] = useState(false);
+  const [drawSentAt, setDrawSentAt] = useState<number | null>(null);
+  const [declinedDrawAt, setDeclinedDrawAt] = useState<number | null>(null);
+  const [actionError, setActionError] = useState("");
+  const [rematchState, setRematchState] = useState<"idle" | "sending" | "offered" | "error">("idle");
+  const [rematchError, setRematchError] = useState("");
+  const [endHidden, setEndHidden] = useState(false);
+  const [muted, setMutedState] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
 
-  // Fetch legal moves whenever FEN changes
-  useEffect(() => {
-    if (!gameState || (gameState.status !== "live" && gameState.status !== "waiting")) return;
-    fetch(`${API_BASE}/v1/games/${gameId}`)
-      .then((r) => r.json())
-      .then((d: { legalMoves?: string[] }) => setLegalMoves(d.legalMoves ?? []))
-      .catch(() => {});
-  }, [gameId, gameState?.fen, gameState?.status]);
+  useEffect(() => { setMutedState(isMuted()); return onMutedChange(setMutedState); }, []);
 
-  // SAN for the move list and the position after every ply, computed from the
-  // authoritative UCI record so review needs no server round trip.
-  const line = useMemo(() => sanLine(gameState?.moves ?? []), [gameState?.moves]);
+  // Offers expire on the server after 30 s; a slow tick is enough to retire them here.
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 2_000); return () => clearInterval(t); }, []);
+
+  const moves = gameState?.moves;
+  const line = useMemo(() => sanLine(moves ?? []), [moves]);
+  const livePly = line.san.length;
+
+  // Sounds follow the record: a move or capture per ply, a start chime on the
+  // first move, and a closing sound (or a win chime) when the game ends.
+  const heard = useRef<{ ply: number; ended: boolean } | null>(null);
+  const status = gameState?.status;
+  const result = gameState?.result;
   useEffect(() => {
-    setReviewFen(reviewPly === null ? null : (line.fens[reviewPly] ?? null));
-  }, [reviewPly, line]);
+    if (!status) return;
+    const ended = status === "ended" || status === "aborted";
+    const prev = heard.current;
+    heard.current = { ply: livePly, ended };
+    if (!prev) return; // first state after joining: no catch-up noise
+    if (livePly > prev.ply) {
+      if (prev.ply === 0) sfx.start();
+      else sfx.move((line.san[livePly - 1] ?? "").includes("x"));
+    }
+    if (ended && !prev.ended) {
+      const me = gameState ? (gameState.white.id === playerId ? "w" : gameState.black.id === playerId ? "b" : null) : null;
+      const won = (result === "white" && me === "w") || (result === "black" && me === "b");
+      if (won) sfx.win(); else sfx.end();
+    }
+  }, [livePly, status, result, line, gameState, playerId]);
+
+  // Leave review mode when a new move lands only if the reviewer was on the live ply.
+  useEffect(() => { setReviewPly((r) => (r !== null && r >= livePly ? null : r)); }, [livePly]);
 
   const handleRematch = useCallback(async () => {
-    setRematchLoading(true);
-    await apiFetch(`/v1/games/${gameId}/rematch`, { method: "POST" }, signedInId).catch(() => {});
-    setRematchLoading(false);
+    setRematchState("sending");
+    const r = await apiFetch(`/v1/games/${gameId}/rematch`, { method: "POST" }, signedInId).catch(() => null);
+    const body = (await r?.json().catch(() => null)) as { status?: string; error?: string; newGameId?: string } | null;
+    if (r?.ok && body?.newGameId) { router.push(`/game/${body.newGameId}`); return; }
+    if (r?.ok) { setRematchState("offered"); return; }
+    setRematchError(body?.error === "rematch_taken" ? "A rematch already started from this game." : describeError(body?.error));
+    setRematchState("error");
+  }, [gameId, signedInId, router]);
+
+  useEffect(() => { if (rematchGameId) router.push(`/game/${rematchGameId}`); }, [rematchGameId, router]);
+
+  const post = useCallback(async (path: string) => {
+    setActionError("");
+    const r = await apiFetch(`/v1/games/${gameId}/${path}`, { method: "POST" }, signedInId).catch(() => null);
+    if (!r?.ok) {
+      const body = (await r?.json().catch(() => null)) as { error?: string } | null;
+      setActionError(describeError(body?.error));
+    }
+    return !!r?.ok;
   }, [gameId, signedInId]);
 
-  // Navigate to rematch game when ready
+  // Arrow keys step through the game; Escape returns to the live position.
   useEffect(() => {
-    if (rematchGameId) router.push(`/game/${rematchGameId}`);
-  }, [rematchGameId, router]);
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      if (livePly === 0) return;
+      if (e.key === "ArrowLeft") { e.preventDefault(); setReviewPly((r) => Math.max(0, (r ?? livePly) - 1)); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); setReviewPly((r) => (r === null || r + 1 >= livePly ? null : r + 1)); }
+      else if (e.key === "Escape") setReviewPly(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [livePly]);
 
-  // ── Loading states ────────────────────────────────────────────────────────
-  if (!gameState && !connected) {
-    return (
-      <div className="flex min-h-screen items-center justify-center" style={{ background: "rgb(var(--sky))" }}>
-        <div className="sticker-card-sm px-8 py-6 text-center" style={{ animation: "pop-in 0.2s ease-out" }}>
-          <div className="h-5 w-5 rounded-full border-2 border-t-transparent animate-spin mx-auto mb-3"
-               style={{ borderColor: "rgb(var(--teal))", borderTopColor: "transparent" }} />
-          <p className="font-display font-bold text-base" style={{ color: "rgb(var(--ink))" }}>Connecting…</p>
-          <p className="text-xs mt-1" style={{ color: "rgb(var(--ink-3))" }}>Game {gameId.slice(-6)}</p>
-        </div>
-      </div>
-    );
-  }
+  // ── Before the first state arrives ─────────────────────────────────────────
   if (!gameState) {
     return (
-      <div className="flex min-h-screen items-center justify-center" style={{ background: "rgb(var(--sky))" }}>
-        <div className="sticker-card-sm px-8 py-6 text-center">
-          <div className="h-5 w-5 rounded-full border-2 border-t-transparent animate-spin mx-auto mb-3"
-               style={{ borderColor: "rgb(var(--ink-3))", borderTopColor: "transparent" }} />
-          <p className="font-display font-bold text-base" style={{ color: "rgb(var(--ink))" }}>Loading…</p>
+      <div className="flex min-h-screen items-center justify-center p-4" style={{ background: "rgb(var(--sky))" }}>
+        <div className="sticker-card px-8 py-6 text-center" style={{ animation: "pop-in 220ms var(--spring) both" }}>
+          <div className="mx-auto mb-3 h-6 w-6 animate-spin rounded-full border-[3px]" style={{ borderColor: "rgb(var(--violet))", borderTopColor: "transparent" }} />
+          <p className="font-display text-lg font-extrabold" style={{ color: "rgb(var(--ink))" }}>
+            {connected ? "Setting up the board…" : "Connecting to the game…"}
+          </p>
+          <p className="mt-1 text-[13px] font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+            If this takes long, check your connection. <Link href="/" className="underline">Back home</Link>
+          </p>
         </div>
       </div>
     );
   }
 
-  const gs        = gameState;
-  const myColor   = injectedColor ?? (gs.white.id === playerId ? "w" : gs.black.id === playerId ? "b" : null);
-  const turn      = gs.turn;
-  const iAmOnMove = myColor === turn && (gs.status === "live" || gs.status === "waiting");
-  const ended     = gs.status === "ended" || gs.status === "aborted";
-  const isCheckmate = ended && gs.reason === "checkmate";
-  const lastRailEntry = [...chainRail].sort((a, b) => b.ply - a.ply)[0];
-  const lastMoveState = lastRailEntry?.state;
-  const lastUci       = gs.moves[gs.moves.length - 1];
+  const gs = gameState;
+  const myColor: Side | null = injectedColor ?? (gs.white.id === playerId ? "w" : gs.black.id === playerId ? "b" : null);
+  const ended = gs.status === "ended" || gs.status === "aborted";
+  const playing = gs.status === "live" || gs.status === "waiting";
+  const reviewing = reviewPly !== null;
+  const iAmOnMove = !!myColor && myColor === gs.turn && playing;
+  const opponent = myColor === "w" ? gs.black : myColor === "b" ? gs.white : null;
+  const vsBot = opponent?.kind === "bot";
 
-  // Player orientation: bottom = my piece side, top = opponent
-  // manualFlip inverts this
-  const bottomIsWhite = myColor === "b" ? manualFlip : !manualFlip;
-  const topPlayer:    PlayerInfo = bottomIsWhite ? gs.black : gs.white;
-  const bottomPlayer: PlayerInfo = bottomIsWhite ? gs.white : gs.black;
-  const topMs    = topPlayer.color    === "w" ? gs.clockWMs : gs.clockBMs;
-  const bottomMs = bottomPlayer.color === "w" ? gs.clockWMs : gs.clockBMs;
-  const topActive    = turn === topPlayer.color    && gs.status === "live";
-  const bottomActive = turn === bottomPlayer.color && gs.status === "live";
+  const displayFen = reviewing ? line.fens[reviewPly] ?? gs.fen : gs.fen;
+  const shownPly = reviewing ? reviewPly : livePly;
+  const lastUci = shownPly > 0 ? gs.moves[shownPly - 1] : undefined;
+  const railByPly = new Map(chainRail.map((e) => [e.ply, e]));
+  const lastMoveState = shownPly > 0 ? railByPly.get(shownPly)?.state : undefined;
+  const finalCount = chainRail.filter((e) => e.state === "final").length;
+  const lastHash = [...chainRail].sort((a, b) => b.ply - a.ply).find((e) => e.state === "final" && e.txHash)?.txHash;
 
-  // FEN to display: review fen if reviewing, else live fen
-  const displayFen = reviewFen ?? gs.fen;
+  const pos = parseFEN(displayFen);
+  const cap = capturedValue(pos);
+  const legal = iAmOnMove && !reviewing ? engineLegalMoves(parseFEN(gs.fen)).map(moveToUci) : [];
 
-  // Explorer hash for the last final move
-  const explorerHash = chainRail.find((e) => e.state === "final")?.txHash;
+  // Orientation: my side at the bottom; spectators see white at the bottom. Flip inverts.
+  const bottomIsWhite = (myColor ?? "w") === "w" ? !manualFlip : manualFlip;
+  const top: PlayerInfo = bottomIsWhite ? gs.black : gs.white;
+  const bottom: PlayerInfo = bottomIsWhite ? gs.white : gs.black;
+  const clockOf = (p: PlayerInfo) => (p.color === "w" ? gs.clockWMs : gs.clockBMs);
+  const runs = (p: PlayerInfo) => gs.status === "live" && gs.turn === p.color;
+  const leadOf = (p: PlayerInfo) => {
+    const d = p.color === "w" ? cap.w - cap.b : cap.b - cap.w;
+    return d > 0 ? d : undefined;
+  };
+
+  const drawIncoming = !!drawOffer && drawOffer.by !== playerId && !!myColor && gs.status === "live"
+    && now - drawOffer.at < 30_000 && declinedDrawAt !== drawOffer.at;
+  const drawPending = drawSentAt !== null && now - drawSentAt < 30_000;
+  const rematchIncoming = !!rematchOfferedBy && rematchOfferedBy !== playerId && rematchState !== "sending";
+
+  // One plain line saying what is going on.
+  const toMove = gs.turn === "w" ? gs.white : gs.black;
+  const check = !ended && inCheck(parseFEN(gs.fen));
+  let statusLine: string;
+  if (reviewing) {
+    statusLine = reviewPly === 0
+      ? "Reviewing the starting position."
+      : `Reviewing ${Math.ceil(reviewPly / 2)}.${reviewPly % 2 === 0 ? ".." : ""} ${line.san[reviewPly - 1] ?? ""}`;
+  }
+  else if (ended) statusLine = "Game over.";
+  else if (!myColor) statusLine = gs.status === "waiting" ? "Waiting for the first move." : `Watching live. ${toMove.handle} to move.`;
+  else if (iAmOnMove) {
+    statusLine = check ? "Check! Your move." : "Your move.";
+    if (livePly === 0) statusLine += " Make your first move within 30 seconds.";
+    else if (livePly === 1) statusLine += " Reply within 30 seconds or the game is called off.";
+  } else if (livePly === 0) statusLine = `Waiting for ${toMove.handle} to make the first move.`;
+  else statusLine = check ? `Check! ${toMove.handle} is thinking…` : `${toMove.handle} is thinking…`;
+
+  const showEnd = ended && !endHidden && !reviewing;
+  const won = !!myColor && ((gs.result === "white" && myColor === "w") || (gs.result === "black" && myColor === "b"));
 
   return (
     <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
-      {isCheckmate && won(gs.result, myColor) && <Confetti />}
+      {ended && won && gs.reason === "checkmate" && <Confetti />}
 
-      {/* Header */}
-      <header
-        className="flex items-center justify-between px-4 py-2.5 border-b"
-        style={{ background: "rgb(var(--cloud) / 0.90)", borderColor: "rgb(var(--ink) / 0.08)" }}
-      >
-        <Link href="/" className="font-display font-extrabold text-base" style={{ color: "rgb(var(--ink))" }}>
-          Final Move
+      <header className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <Link href="/" className="font-display text-[22px] font-extrabold leading-none" style={{ color: "rgb(var(--ink))" }} aria-label="Final Move home">
+          Final <span style={{ color: "rgb(var(--violet))" }}>Move</span>
         </Link>
         <div className="flex items-center gap-2">
-          {/* Connection indicator */}
           <span
-            className="h-2 w-2 rounded-full border"
-            style={{
-              background:  connected ? "rgb(var(--teal))" : "rgb(var(--amber))",
-              borderColor: "rgb(var(--ink) / 0.3)",
-            }}
-          />
-          {/* Chain rail toggle */}
-          <button
-            onClick={() => setShowRail((v) => !v)}
-            className="pop-btn-ghost pop-btn rounded-full px-3 py-1 text-xs font-bold"
-            style={showRail ? { background: "rgb(var(--teal-light))" } : undefined}
+            className="mr-1 hidden items-center gap-1.5 text-[12px] font-extrabold sm:inline-flex"
+            style={{ color: connected ? "rgb(var(--ink-2))" : "rgb(var(--coral))" }}
           >
-            Chain
-          </button>
-          {/* Flip board */}
-          <button
-            onClick={() => setManualFlip((v) => !v)}
-            className="rounded-full px-2.5 py-1 text-xs font-bold border transition-all hover:opacity-80"
-            style={{ borderColor: "rgb(var(--ink) / 0.15)", color: "rgb(var(--ink-2))" }}
-            title="Flip board"
-          >
-            Flip
-          </button>
-          <ThemeToggle />
+            <span className="h-2.5 w-2.5 rounded-full" style={{ background: connected ? "rgb(var(--mint))" : "rgb(var(--amber))", border: "1.5px solid rgb(var(--ink))" }} />
+            {connected ? "Live" : "Reconnecting"}
+          </span>
+          <IconButton label={muted ? "Turn sound on" : "Turn sound off"} pressed={muted} onClick={() => setMuted(!muted)}>
+            <SoundIcon muted={muted} />
+          </IconButton>
+          <IconButton label="Flip the board" pressed={manualFlip} onClick={() => setManualFlip((v) => !v)}>
+            <FlipIcon />
+          </IconButton>
+          <ThemeToggle className="!h-9 !w-9" />
         </div>
       </header>
 
-      {/* Main layout: board + sidebar */}
-      <main className="flex flex-1 flex-col lg:flex-row items-start justify-center gap-3 px-4 py-4 max-w-5xl mx-auto w-full">
-
+      <main className="mx-auto grid w-full max-w-[980px] flex-1 grid-cols-1 items-start gap-5 px-4 pb-8 sm:px-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         {/* Board column */}
-        <div className="flex flex-col gap-2 w-full lg:max-w-[440px] min-w-0">
-
-          {/* Top player bar */}
+        <section className="mx-auto flex w-full max-w-[600px] flex-col gap-3" aria-label="Board">
           <div className="flex items-center gap-2">
-            <div className="flex-1 min-w-0">
-              <PlayerBar player={topPlayer} active={topActive} />
-            </div>
-            <Clock ms={topMs} running={topActive} />
+            <div className="min-w-0 flex-1"><PlayerBar player={top} active={runs(top)} isMe={top.color === myColor} lead={leadOf(top)} /></div>
+            <Clock ms={clockOf(top)} running={runs(top)} label={`${top.handle} clock`} />
           </div>
 
-          {/* Board */}
-          <PlayBoard
-            fen={displayFen}
-            legalMoves={reviewPly !== null ? [] : iAmOnMove ? legalMoves : []}
-            myColor={myColor}
-            turn={turn}
-            lastUci={lastUci}
-            flipped={manualFlip}
-            onMove={sendMove}
-            disabled={!iAmOnMove || ended || reviewPly !== null}
-            lastMoveState={lastMoveState}
-          />
-
-          {/* Bottom player bar */}
-          <div className="flex items-center gap-2">
-            <div className="flex-1 min-w-0">
-              <PlayerBar player={bottomPlayer} active={bottomActive} />
-            </div>
-            <Clock ms={bottomMs} running={bottomActive} />
-          </div>
-
-          {/* Action buttons — resign / draw (live games only) */}
-          {!ended && gs.status === "live" && myColor && (
-            <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  if (confirm("Resign this game?")) {
-                    apiFetch(`/v1/games/${gameId}/resign`, { method: "POST" }, signedInId).catch(() => {});
-                  }
-                }}
-                className="pop-btn pop-btn-danger flex-1 rounded-2xl px-3 py-2 text-sm font-bold"
-              >
-                Resign
-              </button>
-              <button
-                disabled={drawSent}
-                onClick={() => {
-                  setDrawSent(true);
-                  apiFetch(`/v1/games/${gameId}/draw-offer`, { method: "POST" }, signedInId).catch(() => {});
-                }}
-                className="pop-btn-ghost pop-btn flex-1 rounded-2xl px-3 py-2 text-sm font-bold"
-              >
-                {drawSent ? "Draw offered" : "Offer draw"}
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Sidebar column */}
-        <div className="flex flex-col gap-2.5 w-full lg:w-[220px] min-w-0">
-
-          {/* SAN move list */}
-          <div className="sticker-card p-3">
-            <p className="text-[10px] font-extrabold uppercase tracking-widest mb-2 font-display" style={{ color: "rgb(var(--ink-3))" }}>
-              Moves
-            </p>
-            <SanMoveList
-              chainRail={chainRail}
-              sans={line.san}
-              reviewPly={reviewPly}
-              onReviewPly={setReviewPly}
+          <div className="relative">
+            <PlayBoard
+              fen={displayFen}
+              legalMoves={legal}
+              myColor={myColor}
+              turn={pos.turn}
+              lastUci={lastUci}
+              flipped={manualFlip}
+              onMove={sendMove}
+              disabled={!iAmOnMove || reviewing}
+              lastMoveState={lastMoveState}
             />
+            {showEnd && (
+              <EndCard
+                gs={gs}
+                myColor={myColor}
+                delta={myColor && ratingDelta ? (myColor === "w" ? ratingDelta.white : ratingDelta.black) : null}
+                finalCount={finalCount}
+                lastHash={lastHash}
+                rematch={{
+                  state: rematchState === "idle" && rematchIncoming ? "incoming" : rematchState,
+                  error: rematchError,
+                  canRematch: !!myColor && gs.status === "ended" && gs.result !== "aborted",
+                }}
+                onRematch={handleRematch}
+                onHide={() => setEndHidden(true)}
+              />
+            )}
           </div>
 
-          {/* Chain rail */}
-          {showRail && (
-            <div className="sticker-card p-3">
-              <p className="text-[10px] font-extrabold uppercase tracking-widest mb-2 font-display" style={{ color: "rgb(var(--ink-3))" }}>
-                Chain
-              </p>
-              <ChainRailPanel entries={chainRail} sans={line.san} />
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1"><PlayerBar player={bottom} active={runs(bottom)} isMe={bottom.color === myColor} lead={leadOf(bottom)} /></div>
+            <Clock ms={clockOf(bottom)} running={runs(bottom)} label={`${bottom.handle} clock`} />
+          </div>
 
-          {/* Draw offer banner */}
-          {drawOfferedBy && drawOfferedBy !== playerId && !ended && (
-            <div
-              className="sticker-card-sm p-3 flex items-center justify-between gap-2"
-              style={{ borderColor: "rgb(var(--amber))", background: "rgb(var(--amber) / 0.08)" }}
+          {/* Status and actions */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p
+              className="min-h-[24px] text-[15px] font-extrabold"
+              style={{ color: check && iAmOnMove ? "rgb(var(--coral))" : iAmOnMove ? "rgb(var(--violet))" : "rgb(var(--ink-2))" }}
+              aria-live="polite"
             >
-              <span className="text-sm font-bold" style={{ color: "rgb(var(--ink))" }}>Draw offered</span>
-              <div className="flex gap-1.5">
-                <button
-                  onClick={() => {
-                    apiFetch(`/v1/games/${gameId}/draw-offer`, { method: "POST" }, signedInId).catch(() => {});
-                  }}
-                  className="pop-btn rounded-full px-3 py-1 text-xs"
-                >Accept</button>
-                <button onClick={() => {}} className="pop-btn-ghost pop-btn rounded-full px-3 py-1 text-xs">
-                  Decline
-                </button>
+              {statusLine}
+            </p>
+            {reviewing && (
+              <button type="button" onClick={() => setReviewPly(null)} className="chip" style={{ background: "rgb(var(--violet))", color: "#fff" }}>
+                Back to live
+              </button>
+            )}
+            {ended && endHidden && (
+              <button type="button" onClick={() => setEndHidden(false)} className="chip" style={{ background: "rgb(var(--amber))" }}>
+                Show result
+              </button>
+            )}
+          </div>
+
+          {drawIncoming && (
+            <div className="sticker-card-sm flex flex-wrap items-center justify-between gap-2 px-4 py-3" style={{ background: "rgb(var(--violet-light))" }} role="alert">
+              <span className="font-display text-[16px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>{opponent?.handle ?? "Your opponent"} offers a draw</span>
+              <div className="flex gap-2">
+                <button type="button" className="pop-btn min-h-[38px] px-4 text-[14px]" onClick={() => { void post("draw-offer"); }}>Accept</button>
+                <button type="button" className="pop-btn pop-btn-ghost min-h-[38px] px-4 text-[14px]" onClick={() => setDeclinedDrawAt(drawOffer?.at ?? null)}>Decline</button>
               </div>
             </div>
           )}
 
-          {/* Rating delta */}
-          {ended && ratingDelta && myColor && (
-            <div className="sticker-card-sm p-3 flex items-center justify-around">
-              {([["White", ratingDelta.white], ["Black", ratingDelta.black]] as [string, number][]).map(([label, delta]) => (
-                <div key={label} className="text-center">
-                  <div className="text-[10px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>{label} μ</div>
-                  <div
-                    className="font-display font-extrabold text-lg tabular-nums"
-                    style={{
-                      color: delta > 0 ? "rgb(var(--teal))" : delta < 0 ? "rgb(var(--danger))" : "rgb(var(--ink-2))",
-                    }}
-                  >
-                    {delta > 0 ? "+" : ""}{delta.toFixed(1)}
-                  </div>
-                </div>
-              ))}
-            </div>
+          {myColor && playing && !reviewing && (
+            <MoveInput fen={gs.fen} enabled={iAmOnMove} onMove={sendMove} />
           )}
 
-          {/* End screen */}
-          {ended && (
-            <EndScreen
-              result={gs.result}
-              reason={gs.reason}
-              myColor={myColor}
-              explorerHash={explorerHash}
-              plyCount={gs.plyCount}
-              onRematch={handleRematch}
-              rematchLoading={rematchLoading}
-              rematchAvailable={gs.white.kind !== "bot" && gs.black.kind !== "bot"}
-            />
+          {myColor && gs.status === "live" && (
+            confirmResign ? (
+              <div className="sticker-card-sm flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+                <span className="font-display text-[16px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Resign this game?</span>
+                <div className="flex gap-2">
+                  <button type="button" className="pop-btn pop-btn-danger min-h-[38px] px-4 text-[14px]" onClick={() => { setConfirmResign(false); void post("resign"); }}>Yes, resign</button>
+                  <button type="button" className="pop-btn pop-btn-ghost min-h-[38px] px-4 text-[14px]" onClick={() => setConfirmResign(false)} autoFocus>Keep playing</button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex gap-2.5">
+                {!vsBot && (
+                  <button
+                    type="button"
+                    disabled={drawPending}
+                    onClick={async () => { if (await post("draw-offer")) setDrawSentAt(Date.now()); }}
+                    className="pop-btn pop-btn-ghost flex-1 px-3 text-[14px]"
+                  >
+                    {drawPending ? "Draw offered" : "Offer draw"}
+                  </button>
+                )}
+                <button type="button" onClick={() => setConfirmResign(true)} className="pop-btn pop-btn-ghost flex-1 px-3 text-[14px]" style={{ color: "rgb(var(--coral))" }}>
+                  Resign
+                </button>
+              </div>
+            )
           )}
-        </div>
+          {actionError && <p className="text-[13px] font-bold" style={{ color: "rgb(var(--coral))" }} role="alert">{actionError}</p>}
+        </section>
+
+        {/* Side panel */}
+        <aside className="sticker-card mx-auto w-full max-w-[600px] p-4 lg:sticky lg:top-4" aria-label="Game record">
+          <div className="mb-3 grid grid-cols-2 gap-1 rounded-full p-1" style={{ background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }} role="tablist">
+            {(["moves", "chain"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                aria-selected={tab === t}
+                onClick={() => setTab(t)}
+                className="min-h-[36px] rounded-full text-[14px] font-extrabold transition-colors"
+                style={{
+                  background: tab === t ? "rgb(var(--cloud))" : "transparent",
+                  color: "rgb(var(--ink))",
+                  boxShadow: tab === t ? "0 0 0 2px rgb(var(--ink))" : undefined,
+                }}
+              >
+                {t === "moves" ? "Moves" : <>On Arc <span className="tabular-nums" style={{ color: "rgb(var(--ink-3))" }}>{finalCount}</span></>}
+              </button>
+            ))}
+          </div>
+
+          {tab === "moves" ? (
+            <>
+              <MoveList sans={line.san} livePly={livePly} reviewPly={reviewPly} onPick={(p) => setReviewPly(p >= livePly ? null : p)} />
+              {livePly > 0 && (
+                <div className="mt-3 grid grid-cols-4 gap-1.5" aria-label="Step through the game">
+                  {[
+                    { label: "First position", glyph: "⏮", go: () => setReviewPly(0) },
+                    { label: "Previous move", glyph: "◀", go: () => setReviewPly((r) => Math.max(0, (r ?? livePly) - 1)) },
+                    { label: "Next move", glyph: "▶", go: () => setReviewPly((r) => (r === null || r + 1 >= livePly ? null : r + 1)) },
+                    { label: "Live position", glyph: "⏭", go: () => setReviewPly(null) },
+                  ].map((b) => (
+                    <button
+                      key={b.label}
+                      type="button"
+                      onClick={b.go}
+                      aria-label={b.label}
+                      title={b.label}
+                      className="min-h-[38px] rounded-xl text-[13px] font-extrabold transition-colors hover:bg-[rgb(var(--violet-light))]"
+                      style={{ border: "2px solid rgb(var(--ink))", color: "rgb(var(--ink))", background: "rgb(var(--cloud))" }}
+                    >
+                      {b.glyph}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <ChainRecord entries={chainRail} sans={line.san} plyCount={livePly} />
+          )}
+        </aside>
       </main>
 
-      <ReconnectingBanner connected={connected} />
+      {!connected && (
+        <div
+          className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2.5 px-5 py-2.5 font-display text-[15px] font-extrabold"
+          style={{
+            background: "rgb(var(--cloud))",
+            color: "rgb(var(--ink))",
+            border: "var(--line) solid rgb(var(--ink))",
+            borderRadius: "var(--r-pill)",
+            boxShadow: "4px 4px 0 rgb(var(--pop-shadow))",
+          }}
+          role="status"
+        >
+          <span className="h-2.5 w-2.5 animate-pulse rounded-full" style={{ background: "rgb(var(--amber))" }} />
+          Reconnecting to the game…
+        </div>
+      )}
     </div>
   );
-}
-
-/** Helper: did this player win? */
-function won(result: string | undefined, myColor: "w" | "b" | null) {
-  return (result === "white" && myColor === "w") || (result === "black" && myColor === "b");
 }

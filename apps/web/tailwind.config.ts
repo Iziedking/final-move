@@ -1,62 +1,51 @@
 import type { Config } from "tailwindcss";
 
-/* Standalone config for apps/web.
-   Does NOT extend the Zerun baseConfig (that injects lavender sky/violet/candy tokens).
-   All Final Move tokens are resolved via CSS variables defined in globals.css. */
+/* Final Move: Zerun sticker system. Every colour resolves to a CSS variable in
+   globals.css (RGB triplets), so light and dark themes share one set of names.
+   Fonts come from next/font in app/layout.tsx via --font-display/body/mono. */
+const token = (name: string) => `rgb(var(--${name}) / <alpha-value>)`;
+
 const config: Config = {
-  content: [
-    "./src/**/*.{ts,tsx}",
-    "../../packages/ui/src/**/*.{ts,tsx}",
-  ],
+  content: ["./src/**/*.{ts,tsx}", "../../packages/ui/src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        fm: {
-          canvas:       "rgb(var(--fm-canvas) / <alpha-value>)",
-          "canvas-2":   "rgb(var(--fm-canvas-2) / <alpha-value>)",
-          surface:      "rgb(var(--fm-surface) / <alpha-value>)",
-          "surface-2":  "rgb(var(--fm-surface-2) / <alpha-value>)",
-          ink:          "rgb(var(--fm-ink) / <alpha-value>)",
-          ink2:         "rgb(var(--fm-ink-2) / <alpha-value>)",
-          ink3:         "rgb(var(--fm-ink-3) / <alpha-value>)",
-          green:        "rgb(var(--fm-green) / <alpha-value>)",
-          "green-mid":  "rgb(var(--fm-green-mid) / <alpha-value>)",
-          "green-light":"rgb(var(--fm-green-light) / <alpha-value>)",
-          gold:         "rgb(var(--fm-gold) / <alpha-value>)",
-          "gold-light": "rgb(var(--fm-gold-light) / <alpha-value>)",
-          "sq-light":   "rgb(var(--fm-sq-light) / <alpha-value>)",
-          "sq-dark":    "rgb(var(--fm-sq-dark) / <alpha-value>)",
-          success:      "rgb(var(--fm-success) / <alpha-value>)",
-          danger:       "rgb(var(--fm-danger) / <alpha-value>)",
-          draw:         "rgb(var(--fm-draw) / <alpha-value>)",
-        },
+        sky: token("sky"),
+        "sky-2": token("sky-2"),
+        cloud: token("cloud"),
+        "cloud-2": token("cloud-2"),
+        ink: token("ink"),
+        "ink-2": token("ink-2"),
+        "ink-3": token("ink-3"),
+        violet: token("violet"),
+        "violet-deep": token("violet-deep"),
+        "violet-light": token("violet-light"),
+        amber: token("amber"),
+        mint: token("mint"),
+        cyan: token("cyan"),
+        coral: token("coral"),
+        "candy-ink": token("candy-ink"),
       },
       fontFamily: {
-        display: ['"Space Grotesk"', "system-ui", "sans-serif"],
-        sans:    ['"DM Sans"', "system-ui", "sans-serif"],
-        mono:    ['"JetBrains Mono"', "Menlo", "monospace"],
+        display: ["var(--font-display)", "system-ui", "sans-serif"],
+        sans: ["var(--font-body)", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "Menlo", "monospace"],
       },
-      borderRadius: {
-        card: "14px",
-        modal: "20px",
-      },
+      borderWidth: { line: "3px" },
+      borderRadius: { sticker: "18px", "sticker-lg": "28px" },
       boxShadow: {
-        card:  "0 1px 3px rgb(0 0 0 / 0.07), 0 4px 12px rgb(0 0 0 / 0.05)",
-        modal: "0 8px 40px rgb(0 0 0 / 0.14)",
-        inset: "inset 0 1px 3px rgb(0 0 0 / 0.07)",
+        pop: "4px 4px 0 rgb(var(--pop-shadow))",
+        "pop-sm": "2px 2px 0 rgb(var(--pop-shadow))",
+        "pop-lg": "6px 6px 0 rgb(var(--pop-shadow))",
+        "pop-press": "1px 1px 0 rgb(var(--pop-shadow))",
       },
+      transitionTimingFunction: { spring: "cubic-bezier(0.34, 1.56, 0.64, 1)" },
       keyframes: {
-        "fade-in": {
-          "0%": { opacity: "0", transform: "scale(0.97)" },
-          "100%": { opacity: "1", transform: "scale(1)" },
-        },
-        "slide-up": {
-          "0%": { opacity: "0", transform: "translateY(10px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" },
-        },
+        "fade-in": { "0%": { opacity: "0", transform: "scale(0.97)" }, "100%": { opacity: "1", transform: "scale(1)" } },
+        "slide-up": { "0%": { opacity: "0", transform: "translateY(10px)" }, "100%": { opacity: "1", transform: "translateY(0)" } },
       },
       animation: {
-        "fade-in":  "fade-in 0.18s ease-out both",
+        "fade-in": "fade-in 0.18s ease-out both",
         "slide-up": "slide-up 0.22s ease-out both",
       },
     },

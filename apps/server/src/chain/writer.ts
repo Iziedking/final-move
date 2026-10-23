@@ -133,8 +133,12 @@ async function processMoveJob(
   const plyU16 = data.ply;
   const gameIdBytes32 = toBytes32(data.gameId);
 
+  // A job re-run after a crash or restart (BullMQ stalled-job recovery) must not
+  // resubmit or downgrade a move the chain already has.
+  if (await moveDone(data.moveRowId)) return;
+
   // Mark submitted
-  await sql`UPDATE moves SET state='submitted', submitted_at=now() WHERE id=${data.moveRowId}`;
+  await sql`UPDATE moves SET state='submitted', submitted_at=now() WHERE id=${data.moveRowId} AND state NOT IN ('final', 'complete')`;
 
   let tx: CircleTx;
   try {
@@ -147,11 +151,15 @@ async function processMoveJob(
       feeLevel: "HIGH",
     });
   } catch (e) {
-    await sql`UPDATE moves SET state='failed' WHERE id=${data.moveRowId}`;
+    await sql`UPDATE moves SET state='failed' WHERE id=${data.moveRowId} AND state <> 'final'`;
     throw e;
   }
 
-  await sql`UPDATE moves SET circle_tx_id=${tx.id}, state='sent', sent_at=now() WHERE id=${data.moveRowId}`;
+  await sql`
+    UPDATE moves SET circle_tx_id=${tx.id}, sent_at=COALESCE(sent_at, now()),
+      state = CASE WHEN state IN ('final', 'complete') THEN state ELSE 'sent' END
+    WHERE id=${data.moveRowId}
+  `;
 
   // Poll for completion (webhook may beat us — idempotent update).
   const final = await pollTx(tx.id, 60_000);
@@ -173,7 +181,14 @@ async function processMoveJob(
   }
 }
 
+/** True when the move row is already complete or final onchain. */
+async function moveDone(moveRowId: string | number): Promise<boolean> {
+  const rows = await sql<{ state: string }[]>`SELECT state FROM moves WHERE id=${moveRowId}`;
+  return rows[0]?.state === "final" || rows[0]?.state === "complete";
+}
+
 async function processRelayJob(data: Extract<ChainJob, { kind: "relay" }>, attempt = 0) {
+  if (await moveDone(data.moveRowId)) return;
   const key = idempKey(`relay:${data.gameId}:${data.ply}`, attempt);
   const tx = await createContractExecution({
     idempotencyKey: key,
@@ -184,7 +199,11 @@ async function processRelayJob(data: Extract<ChainJob, { kind: "relay" }>, attem
     feeLevel: "HIGH",
   });
 
-  await sql`UPDATE moves SET circle_tx_id=${tx.id}, state='sent', relayed=true WHERE id=${data.moveRowId}`;
+  await sql`
+    UPDATE moves SET circle_tx_id=${tx.id}, relayed=true,
+      state = CASE WHEN state IN ('final', 'complete') THEN state ELSE 'sent' END
+    WHERE id=${data.moveRowId}
+  `;
   const final = await pollTx(tx.id, 60_000);
 
   if (final.state === "COMPLETE") {

@@ -3,7 +3,7 @@ import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import WalletClient from "./WalletClient";
 
-export const metadata = { title: "Wallet - Final Move" };
+export const metadata = { title: "Wallet" };
 
 export default async function WalletPage(): Promise<React.JSX.Element> {
   const session = await auth();

@@ -1,9 +1,12 @@
 "use client";
 import { API_BASE } from "@/lib/api";
+import { useNames } from "@/lib/names";
 import Link from "next/link";
+import Image from "next/image";
 import type React from "react";
 import { useState, useEffect } from "react";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { BotAvatar } from "@/components/BotAvatar";
+import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
 
 type TimeControl = "3+2" | "5+3" | "10+5";
 type GameClass   = "open" | "human";
@@ -19,7 +22,31 @@ interface Row {
 interface ApiResponse { class: GameClass; tc: TimeControl; rows: Row[]; }
 
 const TIME_CONTROLS: TimeControl[] = ["3+2", "5+3", "10+5"];
-const CLASSES: GameClass[]         = ["open", "human"];
+const CLASSES: { id: GameClass; label: string; sub: string }[] = [
+  { id: "open", label: "Open", sub: "People, agents and engines" },
+  { id: "human", label: "Human", sub: "People only" },
+];
+const PODIUM = ["var(--amber)", "var(--cyan)", "var(--coral)"];
+
+function Tabs<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: { id: T; label: string }[]; onChange: (v: T) => void }) {
+  return (
+    <div role="tablist" aria-label={label} className="inline-grid gap-1 rounded-full p-1" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`, background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }}>
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="tab"
+          aria-selected={value === o.id}
+          onClick={() => onChange(o.id)}
+          className="min-h-[40px] rounded-full px-4 font-display text-[15px] font-extrabold"
+          style={{ background: value === o.id ? "rgb(var(--cloud))" : "transparent", boxShadow: value === o.id ? "0 0 0 2px rgb(var(--ink))" : undefined, color: "rgb(var(--ink))" }}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function LeaderboardClient(): React.JSX.Element {
   const [cls, setCls]         = useState<GameClass>("open");
@@ -36,119 +63,84 @@ export function LeaderboardClient(): React.JSX.Element {
       .finally(() => setLoading(false));
   }, [cls, tc]);
 
+  const names = useNames(rows.map((r) => ({ id: r.subjectId, kind: r.subjectKind })));
+
   return (
-    <div className="min-h-screen" style={{ background: "rgb(var(--sky))" }}>
-      <header
-        className="flex items-center justify-between px-4 py-3 border-b-2"
-        style={{ background: "rgb(var(--cloud) / 0.85)", borderColor: "rgb(var(--ink) / 0.10)" }}
-      >
-        <Link href="/" className="font-display font-extrabold text-xl" style={{ color: "rgb(var(--ink))" }}>Final Move</Link>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-bold" style={{ color: "rgb(var(--ink-2))" }}>Leaderboard</span>
-          <ThemeToggle />
-        </div>
-      </header>
+    <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
+      <SiteHeader />
+      <main className="mx-auto w-full max-w-[1120px] px-4 pt-8 sm:px-6 lg:pt-12">
+        <h1 className="font-display font-extrabold" style={{ fontSize: "clamp(38px, 5.4vw, 64px)", lineHeight: 1, color: "rgb(var(--ink))" }}>Leaderboard</h1>
+        <p className="mt-3 max-w-[560px] text-[17px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
+          {CLASSES.find((c) => c.id === cls)?.sub}, ranked separately for each time control.
+        </p>
 
-      <main className="max-w-lg mx-auto px-4 py-6 flex flex-col gap-4">
-        {/* Class tabs */}
-        <div className="flex gap-2">
-          {CLASSES.map((c) => (
-            <button
-              key={c}
-              onClick={() => setCls(c)}
-              className={`flex-1 rounded-2xl border-2 py-2 font-display font-extrabold text-[13px] transition-all capitalize ${
-                cls === c ? "pop-btn" : "pop-btn-ghost pop-btn"
-              }`}
-            >
-              {c}
-            </button>
-          ))}
+        <div className="mt-6 flex flex-wrap gap-3">
+          <Tabs label="Class" value={cls} onChange={setCls} options={CLASSES.map((c) => ({ id: c.id, label: c.label }))} />
+          <Tabs label="Time control" value={tc} onChange={setTc} options={TIME_CONTROLS.map((t) => ({ id: t, label: t.replace("+", " + ") }))} />
         </div>
 
-        {/* Time control pills */}
-        <div className="flex gap-2">
-          {TIME_CONTROLS.map((t) => (
-            <button
-              key={t}
-              onClick={() => setTc(t)}
-              className="rounded-full border-2 px-4 py-1 text-[12px] font-bold transition-all"
-              style={{
-                borderColor: tc === t ? "rgb(var(--ink))"           : "rgb(var(--ink) / 0.2)",
-                background:  tc === t ? "rgb(var(--amber))"         : "rgb(var(--cloud))",
-                color:       tc === t ? "rgb(var(--candy-ink))"     : "rgb(var(--ink-2))",
-                boxShadow:   tc === t ? "2px 2px 0 rgb(var(--pop-shadow))" : "none",
-              }}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-
-        {/* Table */}
-        <div className="sticker-card overflow-hidden p-0">
-          <div
-            className="grid grid-cols-[auto_1fr_auto_auto] gap-x-3 px-4 py-2 border-b-2"
-            style={{ borderColor: "rgb(var(--ink) / 0.10)", background: "rgb(var(--cloud-2))" }}
-          >
-            {["#", "Player", "Rating", "Games"].map((h, i) => (
-              <span
-                key={h}
-                className="text-[11px] font-extrabold font-display uppercase tracking-wider"
-                style={{ color: "rgb(var(--ink-3))", textAlign: i > 1 ? "right" : "left" }}
-              >
-                {h}
-              </span>
+        <div className="sticker-card mt-6 overflow-hidden p-0" aria-live="polite" aria-busy={loading}>
+          <div className="grid grid-cols-[3rem_1fr_auto] gap-x-3 px-4 py-2.5 sm:grid-cols-[3.5rem_1fr_auto_4.5rem] sm:px-5" style={{ background: "rgb(var(--cloud-2))", borderBottom: "2px solid rgb(var(--ink))" }}>
+            {["Rank", "Player", "Rating", "Games"].map((h, i) => (
+              <span key={h} className={`text-[12px] font-extrabold ${i === 3 ? "hidden text-right sm:block" : i === 2 ? "text-right" : ""}`} style={{ color: "rgb(var(--ink-3))" }}>{h}</span>
             ))}
           </div>
 
-          {loading && (
-            <div className="px-4 py-8 text-center text-sm font-bold animate-pulse" style={{ color: "rgb(var(--ink-3))" }}>
-              Loading…
+          {loading && rows.length === 0 && (
+            <div className="flex flex-col" aria-hidden>
+              {[0, 1, 2, 3].map((i) => <div key={i} className="h-[64px] animate-pulse" style={{ background: i % 2 ? "rgb(var(--cloud-2))" : "rgb(var(--cloud))", borderBottom: "2px solid rgb(var(--ink) / 0.08)" }} />)}
             </div>
           )}
           {!loading && rows.length === 0 && (
-            <div className="px-4 py-8 text-center text-sm font-bold" style={{ color: "rgb(var(--ink-3))" }}>
-              No players yet — play a game to appear here.
+            <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
+              <p className="font-display text-[22px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>No one ranked here yet</p>
+              <p className="max-w-[380px] text-[15px] font-semibold" style={{ color: "rgb(var(--ink-2))" }}>Players appear after three rated games in this class and time control.</p>
+              <Link href={cls === "human" ? "/play" : "/"} className="pop-btn min-h-[48px] px-6 text-[15px]">Play a rated game</Link>
             </div>
           )}
 
-          {rows.map((row, i) => (
-            <div
-              key={row.subjectId}
-              className="grid grid-cols-[auto_1fr_auto_auto] gap-x-3 px-4 py-3 items-center border-b-2 last:border-b-0"
-              style={{
-                borderColor: "rgb(var(--ink) / 0.07)",
-                background: i === 0 ? "rgb(var(--amber) / 0.10)" : "transparent",
-              }}
-            >
-              <span className="font-display font-extrabold text-sm w-6 text-center" style={{ color: i === 0 ? "rgb(var(--amber))" : "rgb(var(--ink-2))" }}>
-                {i + 1}
-              </span>
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="chip text-[9px] shrink-0">{row.subjectKind === "bot" ? "Bot" : row.subjectKind === "agent" ? "Agent" : "Human"}</span>
-                <span className="text-sm font-semibold truncate" style={{ color: "rgb(var(--ink))" }}>
-                  {row.subjectId.startsWith("bot_") ? row.subjectId : `@${row.subjectId}`}
-                </span>
-              </div>
-              <div className="text-right">
-                <div className="font-display font-extrabold text-sm" style={{ color: "rgb(var(--teal))" }}>
-                  {Math.round(row.conservative)}
-                </div>
-                <div className="font-mono text-[10px]" style={{ color: "rgb(var(--ink-3))" }}>
-                  μ{row.mu.toFixed(1)}
-                </div>
-              </div>
-              <div className="text-sm font-bold text-right w-10" style={{ color: "rgb(var(--ink-2))" }}>
-                {row.games}
-              </div>
-            </div>
-          ))}
+          <ol className={loading ? "opacity-60 transition-opacity" : "transition-opacity"}>
+            {rows.map((row, i) => {
+              const info = names[row.subjectId];
+              const isBotLike = row.subjectKind === "bot" || row.subjectKind === "agent";
+              return (
+                <li key={row.subjectId} style={{ background: i % 2 ? "rgb(var(--cloud-2))" : "rgb(var(--cloud))", borderBottom: "2px solid rgb(var(--ink) / 0.08)" }}>
+                  <Link href={`/profile/${row.subjectId}`} className="grid min-h-[64px] grid-cols-[3rem_1fr_auto] items-center gap-x-3 px-4 py-2 hover:bg-[rgb(var(--violet-light))] sm:grid-cols-[3.5rem_1fr_auto_4.5rem] sm:px-5">
+                    {i < 3 ? (
+                      <span className="grid h-10 w-10 place-items-center rounded-full font-display text-[19px] font-extrabold" style={{ background: `rgb(${PODIUM[i]})`, color: i === 2 ? "#fff" : "rgb(var(--candy-ink))", border: "2.5px solid rgb(var(--ink))", boxShadow: "2px 2px 0 rgb(var(--pop-shadow))", transform: `rotate(${[-6, 4, -3][i]}deg)` }}>
+                        {i + 1}
+                      </span>
+                    ) : (
+                      <span className="w-10 text-center font-display text-[19px] font-extrabold tabular-nums" style={{ color: "rgb(var(--ink-2))" }}>{i + 1}</span>
+                    )}
+                    <span className="flex min-w-0 items-center gap-3">
+                      <span className="relative h-10 w-10 shrink-0 overflow-hidden rounded-[12px]" style={{ border: "2.5px solid rgb(var(--ink))", background: "rgb(var(--sky-2))" }}>
+                        {isBotLike ? <BotAvatar botId={row.subjectId} className="h-full w-full p-0.5" />
+                          : info?.avatar ? <Image src={info.avatar} alt="" fill sizes="40px" className="object-cover" />
+                          : <span className="grid h-full w-full place-items-center font-display text-[16px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>{(info?.name ?? "?").replace("@", "")[0]?.toUpperCase()}</span>}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate font-display text-[17px] font-extrabold leading-tight" style={{ color: "rgb(var(--ink))" }}>{info?.name ?? "…"}</span>
+                        {isBotLike && <span className="text-[12px] font-bold" style={{ color: "rgb(var(--ink-3))" }}>{row.subjectKind === "bot" ? "House bot" : "Agent"}</span>}
+                      </span>
+                    </span>
+                    <span className="text-right">
+                      <span className="block font-display text-[22px] font-extrabold leading-none tabular-nums" style={{ color: "rgb(var(--violet))" }}>{Math.round(row.conservative)}</span>
+                      <span className="text-[11px] font-bold tabular-nums" style={{ color: "rgb(var(--ink-3))" }}>μ {row.mu.toFixed(1)}</span>
+                    </span>
+                    <span className="hidden text-right text-[15px] font-extrabold tabular-nums sm:block" style={{ color: "rgb(var(--ink-2))" }}>{row.games}</span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ol>
         </div>
 
-        <p className="text-[11px] font-semibold text-center" style={{ color: "rgb(var(--ink-3))" }}>
-          Ranked by conservative TrueSkill (μ − 3σ). Minimum 3 games.
+        <p className="mt-4 text-[13px] font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+          Ranked by conservative TrueSkill (μ − 3σ), so a rating only climbs once it is proven. Minimum three games.
         </p>
       </main>
+      <SiteFooter />
     </div>
   );
 }

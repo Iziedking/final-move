@@ -1,72 +1,45 @@
 "use client";
 /**
- * PlayBoard — interactive chess board.
+ * PlayBoard: the interactive board (docs/design.md, "The board").
  *
- * Design:
- *   Light squares: --sq-light (warm cream).
- *   Dark squares:  --sq-dark  (warm caramel).
- *   Last-move highlight: amber tint on both squares.
- *   Selected piece: teal tint + teal outline.
- *   Legal move dot (empty square): 28% circle, teal/30%.
- *   Capture ring (occupied target): 5 px inset ring, teal/50%.
- *   King in check: coral glow.
- *   Chain-state mark on last-move "to" square:
- *     queued: faint amber dot (3 px)
- *     sent/complete: amber dot + pulse
- *     final: teal dot + brief stamp fade
- *   Coordinates: file (bottom edge) and rank (left edge), readable in both themes.
- *   Board orientation: flipped when player is black; player's own bar is at the bottom.
+ * - Squares: light --sq-light, dark --sq-dark, inside a sticker frame.
+ * - Input: tap a piece then a square, or drag it. Illegal drops spring back.
+ * - Legal targets: ink dots; captures: ink rings. Last move: amber inset ring.
+ *   King in check: coral glow. Selected piece lifts with a pop shadow.
+ * - Promotion: a sticker picker with the four pieces over the promotion square.
+ * - Motion: the moved piece slides in; respects reduced motion.
+ * - Chain: the last move's square carries its onchain state (grey queued,
+ *   cyan sent, mint final) and a short "sealed" stamp the moment it is final.
  */
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import { parseFEN, inCheck } from "@final-move/chess";
 import type { ChainRailEntry } from "@/lib/types";
 import { ChessPiece } from "./ChessPieces";
+
+const PIECE_NAMES: Record<string, string> = { k: "king", q: "queen", r: "rook", b: "bishop", n: "knight", p: "pawn" };
 
 function fenToBoard(fen: string): (string | null)[] {
   const placement = fen.split(" ")[0] ?? "";
   const board: (string | null)[] = [];
   for (const rank of placement.split("/")) {
     for (const ch of rank) {
-      if (/\d/.test(ch)) {
-        for (let i = 0; i < Number(ch); i++) board.push(null);
-      } else {
-        board.push(ch);
-      }
+      if (/\d/.test(ch)) for (let i = 0; i < Number(ch); i++) board.push(null);
+      else board.push(ch);
     }
   }
   while (board.length < 64) board.push(null);
   return board;
 }
 
-/** Get king square for a colour from FEN. Returns -1 if not found. */
-function kingIdx(board: (string | null)[], color: "w" | "b"): number {
-  const k = color === "w" ? "K" : "k";
-  return board.findIndex((p) => p === k);
-}
-
-/** Check if the colour's king is in check from the FEN side-to-move field. */
-function isInCheck(fen: string, color: "w" | "b"): boolean {
-  // Approximate: if the FEN side-to-move matches colour and fen contains " b " or " w "
-  // The server never sends check info explicitly, so we detect via move count.
-  // Simplification: use the FEN active colour — if the active player is on move
-  // we don't know if they're in check without full move generation.
-  // Return false to avoid false positives; the legal-move list already blocks illegal moves.
-  void fen; void color;
-  return false;
-}
-
-/** "e2" → render index (a8=0 array). */
+/** "e2" to render index (a8 = 0). */
 export function algToIdx(alg: string): number {
   if (!alg || alg.length < 2) return -1;
-  const file = alg.charCodeAt(0) - 97;
-  const rank = Number(alg[1]) - 1;
-  return (7 - rank) * 8 + file;
+  return (7 - (Number(alg[1]) - 1)) * 8 + (alg.charCodeAt(0) - 97);
 }
 
-/** Render index → algebraic square. */
+/** Render index to algebraic square. */
 export function idxToAlg(idx: number): string {
-  const file = String.fromCharCode(97 + (idx % 8));
-  const rank = String(8 - Math.floor(idx / 8));
-  return file + rank;
+  return String.fromCharCode(97 + (idx % 8)) + String(8 - Math.floor(idx / 8));
 }
 
 interface PlayBoardProps {
@@ -78,9 +51,17 @@ interface PlayBoardProps {
   flipped?: boolean;
   onMove: (uci: string) => void;
   disabled?: boolean;
-  /** Chain state of the last move, for the on-board stamp. */
+  /** Chain state of the last move, for the on-board mark. */
   lastMoveState?: ChainRailEntry["state"];
 }
+
+const CHAIN_MARK: Record<string, { color: string; label: string }> = {
+  queued:   { color: "var(--ink-3)", label: "Queued for Arc" },
+  sent:     { color: "var(--cyan)",  label: "Sent to Arc" },
+  complete: { color: "var(--cyan)",  label: "Sent to Arc" },
+  final:    { color: "var(--mint)",  label: "Final on Arc" },
+  failed:   { color: "var(--coral)", label: "Not recorded yet" },
+};
 
 export function PlayBoard({
   fen,
@@ -93,205 +74,301 @@ export function PlayBoard({
   disabled = false,
   lastMoveState,
 }: PlayBoardProps): React.JSX.Element {
-  // Auto-flip so player's own pieces are at the bottom
+  // The player's own pieces sit at the bottom.
   const flipped = myColor === "b" ? !flippedProp : flippedProp;
 
   const [selected, setSelected] = useState<number | null>(null);
+  const [promo, setPromo] = useState<{ from: number; to: number } | null>(null);
+  const [drag, setDrag] = useState<{ idx: number; x: number; y: number; moved: boolean } | null>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
 
-  const board    = useMemo(() => fenToBoard(fen), [fen]);
-  const fromIdx  = lastUci ? algToIdx(lastUci.slice(0, 2)) : -1;
-  const toIdx    = lastUci ? algToIdx(lastUci.slice(2, 4)) : -1;
-  const inCheck  = isInCheck(fen, turn);
-  const checkIdx = inCheck ? kingIdx(board, turn) : -1;
+  const board = useMemo(() => fenToBoard(fen), [fen]);
+  const fromIdx = lastUci ? algToIdx(lastUci.slice(0, 2)) : -1;
+  const toIdx = lastUci ? algToIdx(lastUci.slice(2, 4)) : -1;
 
-  const legalTargets = useMemo<Set<number>>(() => {
-    if (selected === null) return new Set();
-    const fromAlg = idxToAlg(selected);
-    return new Set(
-      legalMoves
-        .filter((u) => u.startsWith(fromAlg))
-        .map((u) => algToIdx(u.slice(2, 4))),
-    );
-  }, [selected, legalMoves]);
+  const checkIdx = useMemo(() => {
+    try {
+      const pos = parseFEN(fen);
+      if (!inCheck(pos)) return -1;
+      return board.findIndex((p) => p === (pos.turn === "w" ? "K" : "k"));
+    } catch {
+      return -1;
+    }
+  }, [fen, board]);
 
-  const selectablePieces = useMemo<Set<number>>(() => {
-    if (myColor !== turn || disabled) return new Set();
-    const set = new Set<number>();
-    for (const u of legalMoves) set.add(algToIdx(u.slice(0, 2)));
-    return set;
-  }, [legalMoves, myColor, turn, disabled]);
+  const myTurn = !disabled && myColor !== null && myColor === turn;
 
-  const handleClick = useCallback(
-    (idx: number) => {
-      if (disabled || myColor !== turn) return;
-      const piece = board[idx];
-      if (selected !== null) {
-        if (legalTargets.has(idx)) {
-          const fromAlg     = idxToAlg(selected);
-          const toAlg       = idxToAlg(idx);
-          const movingPiece = board[selected];
-          const needsPromo  =
-            (movingPiece === "P" && toAlg[1] === "8") ||
-            (movingPiece === "p" && toAlg[1] === "1");
-          onMove(fromAlg + toAlg + (needsPromo ? "q" : ""));
-          setSelected(null);
-          return;
-        }
-        if (piece && selectablePieces.has(idx)) { setSelected(idx); return; }
-        setSelected(null);
-        return;
-      }
-      if (piece && selectablePieces.has(idx)) setSelected(idx);
+  const movable = useMemo<Set<number>>(() => {
+    if (!myTurn) return new Set();
+    return new Set(legalMoves.map((u) => algToIdx(u.slice(0, 2))));
+  }, [legalMoves, myTurn]);
+
+  const targetsFrom = useCallback(
+    (from: number) => {
+      const alg = idxToAlg(from);
+      return new Set(legalMoves.filter((u) => u.startsWith(alg)).map((u) => algToIdx(u.slice(2, 4))));
     },
-    [selected, legalTargets, selectablePieces, board, disabled, myColor, turn, onMove],
+    [legalMoves],
+  );
+  const activeFrom = drag?.idx ?? selected;
+  const legalTargets = useMemo(() => (activeFrom === null ? new Set<number>() : targetsFrom(activeFrom)), [activeFrom, targetsFrom]);
+
+  // A new position clears any half-made move.
+  useEffect(() => { setSelected(null); setPromo(null); }, [fen]);
+
+  const tryMove = useCallback(
+    (from: number, to: number): boolean => {
+      if (!targetsFrom(from).has(to)) return false;
+      const piece = board[from];
+      const toAlg = idxToAlg(to);
+      if ((piece === "P" && toAlg[1] === "8") || (piece === "p" && toAlg[1] === "1")) {
+        setPromo({ from, to });
+        return true;
+      }
+      onMove(idxToAlg(from) + toAlg);
+      setSelected(null);
+      return true;
+    },
+    [board, onMove, targetsFrom],
   );
 
-  const displayOrder = useMemo(() => {
-    const indices = Array.from({ length: 64 }, (_, i) => i);
-    return flipped ? indices.reverse() : indices;
+  const handleSquare = useCallback(
+    (idx: number) => {
+      if (!myTurn || promo) return;
+      if (selected !== null && selected !== idx && tryMove(selected, idx)) return;
+      setSelected(movable.has(idx) && selected !== idx ? idx : null);
+    },
+    [myTurn, promo, selected, tryMove, movable],
+  );
+
+  // ── Drag ────────────────────────────────────────────────────────────────────
+  const squareAt = (x: number, y: number): number | null => {
+    const el = document.elementFromPoint(x, y)?.closest("[data-sq]");
+    return el ? Number(el.getAttribute("data-sq")) : null;
+  };
+  const onPointerDown = (idx: number) => (e: React.PointerEvent) => {
+    if (!myTurn || promo || !movable.has(idx) || e.button !== 0) return;
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    setDrag({ idx, x: e.clientX, y: e.clientY, moved: false });
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!drag) return;
+    const moved = drag.moved || Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 6;
+    setDrag({ ...drag, x: e.clientX, y: e.clientY, moved });
+  };
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (!drag) return;
+    const target = squareAt(e.clientX, e.clientY);
+    const d = drag;
+    setDrag(null);
+    if (!d.moved) { handleSquare(d.idx); return; } // a tap, not a drag
+    if (target === null || !tryMove(d.idx, target)) setSelected(null); // spring back
+  };
+
+  const order = useMemo(() => {
+    const all = Array.from({ length: 64 }, (_, i) => i);
+    return flipped ? all.reverse() : all;
   }, [flipped]);
 
-  // Chain-state dot for the last-move "to" square
-  const chainDotStyle: React.CSSProperties | undefined = (() => {
-    if (!lastMoveState) return undefined;
-    if (lastMoveState === "final")   return { background: "rgb(var(--teal))",  boxShadow: "0 0 0 2px rgb(var(--teal) / 0.3)" };
-    if (lastMoveState === "complete") return { background: "rgb(var(--amber))" };
-    if (lastMoveState === "sent")     return { background: "rgb(var(--amber))", animation: "pulse 1s ease-in-out infinite" };
-    return { background: "rgb(var(--ink-3))" };
-  })();
+  // Screen position of a render index (0..7 col/row on screen)
+  const screenOf = (idx: number) => {
+    const file = idx % 8, rank = Math.floor(idx / 8);
+    return flipped ? { c: 7 - file, r: 7 - rank } : { c: file, r: rank };
+  };
+
+  // Slide the last moved piece in from its origin square.
+  const slide = fromIdx >= 0 && toIdx >= 0
+    ? { dx: (screenOf(fromIdx).c - screenOf(toIdx).c) * 100, dy: (screenOf(fromIdx).r - screenOf(toIdx).r) * 100 }
+    : null;
+
+  // Briefly stamp a move the moment it becomes final on Arc.
+  const [stampFor, setStampFor] = useState<string | null>(null);
+  const prevState = useRef<{ uci?: string; state?: string }>({});
+  useEffect(() => {
+    const prev = prevState.current;
+    if (lastUci && lastMoveState === "final" && !(prev.uci === lastUci && prev.state === "final")) {
+      setStampFor(lastUci);
+      const t = setTimeout(() => setStampFor(null), 900);
+      prevState.current = { uci: lastUci, state: lastMoveState };
+      return () => clearTimeout(t);
+    }
+    prevState.current = { uci: lastUci, state: lastMoveState };
+    return undefined;
+  }, [lastUci, lastMoveState]);
+
+  const mark = lastMoveState ? CHAIN_MARK[lastMoveState] : undefined;
+  const sqPx = boardRef.current ? boardRef.current.getBoundingClientRect().width / 8 : 56;
+  const boardRect = boardRef.current?.getBoundingClientRect();
 
   return (
-    <div
-      className="w-full select-none"
-      style={{ maxWidth: "min(100vw - 32px, 440px)", margin: "0 auto" }}
-      role="grid"
-      aria-label="Chess board"
-    >
+    <div className="relative w-full select-none" style={{ maxWidth: "min(100vw - 32px, 76vh, 600px)", margin: "0 auto" }}>
       <div
-        className="grid grid-cols-8 overflow-hidden"
+        ref={boardRef}
+        role="grid"
+        aria-label={`Chess board, ${turn === "w" ? "white" : "black"} to move${myTurn ? ", your move" : ""}`}
+        className="relative grid grid-cols-8 overflow-hidden touch-none"
         style={{
-          borderRadius: "14px",
-          border: "2.5px solid rgb(var(--ink))",
-          boxShadow: "5px 5px 0 rgb(var(--pop-shadow))",
+          borderRadius: "var(--r)",
+          border: "var(--line) solid rgb(var(--ink))",
+          boxShadow: "6px 6px 0 rgb(var(--pop-shadow))",
+          background: "rgb(var(--sq-light))",
         }}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={() => setDrag(null)}
       >
-        {displayOrder.map((idx) => {
+        {order.map((idx) => {
           const file = idx % 8;
           const rank = Math.floor(idx / 8);
-          // Light square: (file + rank) % 2 === 1 when normal orientation
-          const isLight   = (file + rank) % 2 === 1;
-          const piece     = board[idx] ?? null;
-          const isFrom    = idx === fromIdx;
-          const isTo      = idx === toIdx;
-          const isSel     = idx === selected;
-          const isLegal   = legalTargets.has(idx);
+          const isLight = (file + rank) % 2 === 0; // a8 and h1 are light squares
+          const piece = board[idx] ?? null;
+          const isLast = idx === fromIdx || idx === toIdx;
+          const isSel = idx === selected;
+          const isLegal = legalTargets.has(idx);
           const isCapture = isLegal && piece !== null;
-          const isSel2    = selectablePieces.has(idx);
-          const isCheck   = idx === checkIdx;
-
-          // Coordinates: rank on the A-file square, file on the 1-rank square
-          // When flipped: rank on H-file, file on 8-rank
-          const showRank = !flipped ? file === 0 : file === 7;
-          const showFile = !flipped ? rank === 7 : rank === 0;
-          const fileLabel = String.fromCharCode(97 + file);
-          const rankLabel = String(8 - rank);
-
-          const sqBg = isCheck
-            ? "rgb(var(--coral) / 0.35)"
-            : isSel
-            ? "rgb(var(--teal-light))"
-            : (isFrom || isTo)
-            ? isLight
-              ? "rgb(var(--amber) / 0.55)"
-              : "rgb(var(--amber) / 0.45)"
-            : isLight
-            ? "rgb(var(--sq-light))"
-            : "rgb(var(--sq-dark))";
-
-          const labelColor = isLight
-            ? "rgb(var(--sq-dark) / 0.65)"
-            : "rgb(var(--sq-light) / 0.65)";
+          const isCheck = idx === checkIdx;
+          const dragging = drag?.idx === idx && drag.moved;
+          const { c, r } = screenOf(idx);
+          const name = piece ? `${piece === piece.toUpperCase() ? "white" : "black"} ${PIECE_NAMES[piece.toLowerCase()]}` : "empty";
 
           return (
             <div
               key={idx}
+              data-sq={idx}
               role="gridcell"
-              aria-label={idxToAlg(idx)}
-              tabIndex={isSel2 || isLegal ? 0 : -1}
-              onClick={() => handleClick(idx)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") handleClick(idx);
+              aria-label={`${idxToAlg(idx)}, ${name}${isLegal ? ", legal move" : ""}`}
+              aria-selected={isSel}
+              tabIndex={movable.has(idx) || isLegal ? 0 : -1}
+              onPointerDown={onPointerDown(idx)}
+              onClick={() => { if (!movable.has(idx) || !myTurn) handleSquare(idx); }}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleSquare(idx); } }}
+              className="relative aspect-square"
+              style={{
+                background: isCheck
+                  ? "radial-gradient(circle, rgb(var(--coral) / 0.85) 0%, rgb(var(--coral) / 0.35) 55%, transparent 75%), rgb(var(--sq-" + (isLight ? "light" : "dark") + "))"
+                  : `rgb(var(--sq-${isLight ? "light" : "dark"}))`,
+                cursor: movable.has(idx) || isLegal ? "pointer" : "default",
               }}
-              className="relative aspect-square cursor-pointer"
-              style={{ background: sqBg, outline: isSel ? "2.5px solid rgb(var(--teal))" : undefined, outlineOffset: isSel ? "-2.5px" : undefined }}
             >
-              {/* Rank coordinate */}
-              {showRank && (
-                <span
-                  className="absolute left-[3px] top-[2px] text-[8px] font-bold leading-none pointer-events-none select-none z-10"
-                  style={{ color: labelColor, fontFamily: "'JetBrains Mono',monospace" }}
-                >
-                  {rankLabel}
-                </span>
-              )}
-              {/* File coordinate */}
-              {showFile && (
-                <span
-                  className="absolute bottom-[2px] right-[3px] text-[8px] font-bold leading-none pointer-events-none select-none z-10"
-                  style={{ color: labelColor, fontFamily: "'JetBrains Mono',monospace" }}
-                >
-                  {fileLabel}
-                </span>
-              )}
+              {/* Last move: amber inset ring */}
+              {isLast && <span className="pointer-events-none absolute inset-0" style={{ boxShadow: "inset 0 0 0 4px rgb(var(--amber))", background: "rgb(var(--amber) / 0.18)" }} />}
+              {/* Selected square */}
+              {isSel && <span className="pointer-events-none absolute inset-0" style={{ background: "rgb(var(--violet) / 0.22)" }} />}
 
-              {/* Chain-state mark on the last-move destination square */}
-              {isTo && chainDotStyle && (
-                <span
-                  className="absolute top-[3px] right-[3px] w-[8px] h-[8px] rounded-full pointer-events-none z-20"
-                  style={chainDotStyle}
-                  title={lastMoveState}
-                />
-              )}
-
-              {/* Legal move dot (empty square) */}
-              {isLegal && !isCapture && (
-                <span className="pointer-events-none absolute inset-0 flex items-center justify-center z-10">
-                  <span className="rounded-full" style={{ width: "28%", height: "28%", background: "rgb(var(--teal) / 0.35)" }} />
+              {/* Coordinates on the edge squares */}
+              {c === 0 && (
+                <span className="pointer-events-none absolute left-[4px] top-[2px] font-sans text-[10px] font-extrabold leading-none" style={{ color: "rgb(var(--ink) / 0.45)" }}>
+                  {String(8 - rank)}
                 </span>
               )}
-              {/* Capture ring */}
-              {isCapture && (
-                <span
-                  className="pointer-events-none absolute inset-0 z-10"
-                  style={{ boxShadow: "inset 0 0 0 5px rgb(var(--teal) / 0.50)" }}
-                />
+              {r === 7 && (
+                <span className="pointer-events-none absolute bottom-[2px] right-[4px] font-sans text-[10px] font-extrabold leading-none" style={{ color: "rgb(var(--ink) / 0.45)" }}>
+                  {String.fromCharCode(97 + file)}
+                </span>
               )}
 
               {/* Piece */}
               {piece !== null && (
                 <span
+                  key={idx === toIdx ? `${lastUci}` : undefined}
                   className="absolute inset-0 flex items-center justify-center"
                   style={{
-                    padding: "7%",
-                    transform: isSel ? "scale(1.12)" : undefined,
-                    transition: "transform 80ms cubic-bezier(0.34,1.56,0.64,1)",
+                    padding: "6%",
+                    opacity: dragging ? 0.25 : 1,
+                    transform: isSel ? "translate(-1px, -3px) scale(1.08)" : undefined,
+                    filter: isSel ? "drop-shadow(2px 3px 0 rgb(var(--pop-shadow)))" : undefined,
+                    transition: "transform 140ms var(--spring)",
+                    animation: idx === toIdx && slide ? "piece-slide 140ms var(--spring) both" : undefined,
+                    ["--dx" as string]: `${slide?.dx ?? 0}%`,
+                    ["--dy" as string]: `${slide?.dy ?? 0}%`,
                   }}
                 >
                   <ChessPiece piece={piece} />
                 </span>
               )}
 
-              {/* Hover ring for selectable pieces (CSS only) */}
-              {isSel2 && !isSel && (
+              {/* Legal targets: ink dot, or ring for a capture */}
+              {isLegal && !isCapture && (
+                <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <span className="rounded-full" style={{ width: "30%", height: "30%", background: "rgb(var(--piece-line) / 0.22)" }} />
+                </span>
+              )}
+              {isCapture && <span className="pointer-events-none absolute inset-[4%] rounded-full" style={{ boxShadow: "inset 0 0 0 5px rgb(var(--piece-line) / 0.28)" }} />}
+
+              {/* Chain mark on the last move's square */}
+              {idx === toIdx && mark && (
                 <span
-                  className="pointer-events-none absolute inset-0 opacity-0 hover:opacity-100 transition-opacity z-10"
-                  style={{ boxShadow: "inset 0 0 0 2px rgb(var(--teal) / 0.45)" }}
+                  className="pointer-events-none absolute right-[5%] top-[5%] h-[16%] w-[16%] rounded-full"
+                  style={{
+                    background: `rgb(${mark.color})`,
+                    border: "2px solid rgb(var(--piece-line))",
+                    animation: lastMoveState === "sent" || lastMoveState === "complete" ? "pulse 1s ease-in-out infinite" : undefined,
+                  }}
+                  title={mark.label}
+                  aria-label={mark.label}
+                />
+              )}
+              {idx === toIdx && stampFor === lastUci && (
+                <span
+                  className="pointer-events-none absolute inset-[3%] rounded-[12px]"
+                  style={{ boxShadow: "inset 0 0 0 3px rgb(var(--mint))", animation: "seal-stamp 900ms var(--spring) both" }}
+                  aria-hidden
                 />
               )}
             </div>
           );
         })}
+
+        {/* Promotion picker over the promotion square's file */}
+        {promo && (() => {
+          const { c } = screenOf(promo.to);
+          const white = board[promo.from] === "P";
+          return (
+            <div className="absolute inset-0 z-30" style={{ background: "rgb(var(--scrim) / 0.35)" }} onClick={() => setPromo(null)}>
+              <div
+                role="dialog"
+                aria-label="Choose a piece to promote to"
+                className="absolute flex flex-col overflow-hidden"
+                style={{
+                  left: `${c * 12.5}%`, top: 0, width: "12.5%",
+                  background: "rgb(var(--cloud))",
+                  border: "var(--line) solid rgb(var(--ink))",
+                  borderRadius: "var(--r)",
+                  boxShadow: "4px 4px 0 rgb(var(--pop-shadow))",
+                  animation: "pop-in 160ms var(--spring) both",
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {(["q", "r", "b", "n"] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    aria-label={`Promote to ${PIECE_NAMES[p]}`}
+                    className="aspect-square p-[8%] hover:bg-violet-light focus-visible:bg-violet-light"
+                    onClick={() => { onMove(idxToAlg(promo.from) + idxToAlg(promo.to) + p); setPromo(null); setSelected(null); }}
+                  >
+                    <ChessPiece piece={white ? p.toUpperCase() : p} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
       </div>
+
+      {/* The dragged piece follows the pointer */}
+      {drag?.moved && board[drag.idx] && boardRect && (
+        <div
+          className="pointer-events-none fixed z-50"
+          style={{
+            width: sqPx * 1.12, height: sqPx * 1.12,
+            left: drag.x - (sqPx * 1.12) / 2, top: drag.y - (sqPx * 1.12) / 2,
+            filter: "drop-shadow(3px 4px 0 rgb(var(--pop-shadow)))",
+          }}
+        >
+          <ChessPiece piece={board[drag.idx]!} />
+        </div>
+      )}
     </div>
   );
 }
