@@ -50,7 +50,14 @@ const nextConfig: NextConfig = {
     "127.0.0.1:3000",
   ],
   outputFileTracingRoot: path.join(__dirname, "../../"),
-  transpilePackages: ["@final-move/ui", "@final-move/shared"],
+  transpilePackages: ["@final-move/ui", "@final-move/shared", "@final-move/chess"],
+  // Workspace packages import their TypeScript siblings with Node-style ".js"
+  // specifiers (./engine.js -> engine.ts); let webpack resolve them.
+  webpack: (config) => {
+    config.resolve ??= {};
+    config.resolve.extensionAlias = { ...config.resolve.extensionAlias, ".js": [".ts", ".tsx", ".js"] };
+    return config;
+  },
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "pbs.twimg.com" },

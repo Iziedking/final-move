@@ -395,20 +395,8 @@ export async function endGame(
     }
   }).catch((e: unknown) => console.error("[ratings] failed:", (e as Error).message));
 
-  // Auto-settle staked match if fully funded
-  if (game.status === "ended") {
-    const gameRow = await sql<{ stake_offer_id: string | null }[]>`
-      SELECT stake_offer_id FROM games WHERE id=${game.id}
-    `;
-    const stakeOfferId = gameRow[0]?.stake_offer_id;
-    if (stakeOfferId) {
-      import("../stakes/index.ts").then(({ onStakedGameEnd }) =>
-        onStakedGameEnd(stakeOfferId).catch((e: unknown) =>
-          console.error("[stakes] auto-settle failed:", (e as Error).message),
-        ),
-      ).catch(() => {});
-    }
-  }
+  // Staked matches settle from the indexer once GameEnded is confirmed onchain;
+  // escrow.settle reverts before that, so nothing is triggered here.
 
   // Tournament bracket advancement
   {
@@ -515,8 +503,9 @@ export async function abortGame(gameId: string, reason: GameEndReason) {
     scheduleEndGame(game, "aborted", reason, fenHash);
   }
 
-  // For staked games, trigger escrow refund path (abort ⇒ both players refunded)
-  {
+  // Staked aborts refund from the indexer when GameEnded lands. Only a game that never
+  // reached the chain (so no GameEnded will ever come) is handed to the refund path here.
+  if (!game.chainLive) {
     const gameRow = await sql<{ stake_offer_id: string | null }[]>`
       SELECT stake_offer_id FROM games WHERE id=${gameId}
     `;
@@ -658,7 +647,7 @@ async function updateHvM(game: LiveGame, result: GameResult) {
 
 // ── Gas top-up ────────────────────────────────────────────────────────────────
 
-async function maybeTopUp(walletId: string, _addr: string) {
+export async function maybeTopUp(walletId: string, _addr: string) {
   try {
     const bal = await getUsdcBalance(walletId);
     if (bal >= TOPUP_THRESHOLD_USDC6) return;

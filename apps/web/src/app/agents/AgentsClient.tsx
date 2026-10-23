@@ -1,5 +1,5 @@
 "use client";
-import { API_BASE } from "@/lib/api";
+import { apiFetch, describeError } from "@/lib/session";
 import Link from "next/link";
 import type React from "react";
 import { useState, useEffect } from "react";
@@ -7,7 +7,6 @@ import type { Session } from "next-auth";
 import { signIn } from "next-auth/react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
-const SERVER = API_BASE;
 
 interface AgentRecord { id: string; name: string; status: string; createdAt: string; }
 
@@ -22,7 +21,7 @@ export function AgentsClient({ session }: { session: Session | null }): React.JS
   const userId = session?.user?.id;
   useEffect(() => {
     if (!userId) return;
-    fetch(`${SERVER}/v1/agents?ownerId=${userId}`)
+    apiFetch("/v1/agents", {}, userId)
       .then((r) => r.json())
       .then((d: { agents: AgentRecord[] }) => setAgents(d.agents ?? []))
       .catch(() => {});
@@ -32,9 +31,9 @@ export function AgentsClient({ session }: { session: Session | null }): React.JS
     if (!userId || !name.trim()) return;
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`${SERVER}/v1/agents`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ownerId: userId, name: name.trim(), modelNote: modelNote || undefined }) });
+      const res = await apiFetch("/v1/agents", { method: "POST", body: JSON.stringify({ name: name.trim(), modelNote: modelNote || undefined }) }, userId);
       const data = await res.json() as { agentId?: string; apiKey?: string; error?: string };
-      if (!res.ok) throw new Error(data.error ?? "Failed");
+      if (!res.ok) throw new Error(data.error && !data.error.includes("_") ? data.error : describeError(data.error));
       setNewKey(data.apiKey ?? null);
       setAgents((prev) => [...prev, { id: data.agentId!, name: name.trim(), status: "active", createdAt: new Date().toISOString() }]);
       setName(""); setModelNote("");

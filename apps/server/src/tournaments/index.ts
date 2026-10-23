@@ -17,7 +17,7 @@ import {
   buildBracket, nextMatch, recordResult, champion, placements,
   type Seedable,
 } from "@final-move/chess";
-import { createContractExecution, uuidV5 } from "../chain/circle.ts";
+import { createContractExecution, pollTx, uuidV5 } from "../chain/circle.ts";
 import { nanoid } from "../util/ids.ts";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -25,6 +25,7 @@ import { nanoid } from "../util/ids.ts";
 const POOL_ABI_CREATE   = "create(bytes32,uint256,uint16[],uint64)";
 const POOL_ABI_FUND     = "fund(bytes32,uint256)";
 const POOL_ABI_FINALIZE = "finalize(bytes32,address[])";
+const POOL_ABI_REGISTER = "register(bytes32)";
 const _POOL_ABI_CANCEL  = "cancel(bytes32)";
 void _POOL_ABI_CANCEL; // reserved for cancel-tournament flow
 
@@ -81,7 +82,7 @@ export async function createTournament(opts: {
   // On-chain: create tournament (entry fee = 0, splits = DEFAULT_SPLITS_BPS)
   // Idempotency key must be a UUID; use uuidV5 deterministically from the tournament id.
   const regCloseSec = Math.floor(opts.regClose.getTime() / 1000);
-  await createContractExecution({
+  const createTx = await createContractExecution({
     walletId:             cfg.REFEREE_WALLET_ID,
     contractAddress:      cfg.POOL_ADDRESS,
     abiFunctionSignature: POOL_ABI_CREATE,
@@ -93,6 +94,9 @@ export async function createTournament(opts: {
     ],
     idempotencyKey: uuidV5(`tournament:create:${id}`),
   });
+  // Entrants register against this tid right away, so it must exist onchain first.
+  const created = await pollTx(createTx.id, 90_000);
+  if (created.state !== "COMPLETE") throw new Error(`onchain_create_${String(created.state).toLowerCase()}`);
 
   await sql`
     INSERT INTO tournaments
@@ -120,8 +124,8 @@ export async function fundTournament(tournamentId: string): Promise<void> {
   const ERC20_APPROVE_SIG = "approve(address,uint256)";
   const approveAmount = String(t.prize_pool_usdc6);
 
-  // Step 1: approve
-  await createContractExecution({
+  // Step 1: approve, confirmed before fund() estimates gas against the allowance
+  const approveTx = await createContractExecution({
     walletId:             cfg.TREASURY_WALLET_ID,
     contractAddress:      cfg.USDC_ADDRESS,
     abiFunctionSignature: ERC20_APPROVE_SIG,
@@ -129,6 +133,8 @@ export async function fundTournament(tournamentId: string): Promise<void> {
     idempotencyKey:       uuidV5(`tournament:approve:${tournamentId}`),
     feeLevel:             "HIGH",
   });
+  const approved = await pollTx(approveTx.id, 90_000);
+  if (approved.state !== "COMPLETE") throw new Error(`onchain_approve_${String(approved.state).toLowerCase()}`);
 
   // Step 2: call fund()
   const fundTx = await createContractExecution({
@@ -140,7 +146,9 @@ export async function fundTournament(tournamentId: string): Promise<void> {
     feeLevel:             "HIGH",
   });
 
-  const txId = fundTx.id ?? "";
+  const funded = await pollTx(fundTx.id, 90_000);
+  if (funded.state !== "COMPLETE") throw new Error(`onchain_fund_${String(funded.state).toLowerCase()}`);
+  const txId = funded.txHash ?? fundTx.id ?? "";
   await sql`
     UPDATE tournaments
     SET fund_tx_hash=${txId}, status='open'
@@ -159,6 +167,25 @@ export async function registerEntry(opts: {
   if (!["upcoming", "open"].includes(t.status)) throw new Error("registration_closed");
   if (new Date() >= t.reg_close) throw new Error("reg_deadline_passed");
 
+  const already = await sql`SELECT 1 FROM entries WHERE tournament_id=${opts.tournamentId} AND player_id=${opts.playerId}`;
+  if (already.length) return;
+
+  // TournamentPool.register() records msg.sender, so each entrant registers from
+  // their own wallet. Guests share the referee wallet and cannot enter.
+  const wallet = await getPlayerWallet(opts.playerId);
+  const { maybeTopUp } = await import("../referee/game.ts");
+  await maybeTopUp(wallet.walletId, wallet.address);
+  const tx = await createContractExecution({
+    walletId:             wallet.walletId,
+    contractAddress:      cfg.POOL_ADDRESS,
+    abiFunctionSignature: POOL_ABI_REGISTER,
+    abiParameters:        [t.chain_tid!],
+    idempotencyKey:       uuidV5(`tournament:register:${opts.tournamentId}:${opts.playerId}`),
+    feeLevel:             "HIGH",
+  });
+  const done = await pollTx(tx.id, 90_000);
+  if (done.state !== "COMPLETE") throw new Error(`onchain_register_${String(done.state).toLowerCase()}`);
+
   await sql`
     INSERT INTO entries (tournament_id, player_id, player_kind)
     VALUES (${opts.tournamentId}, ${opts.playerId}, ${opts.playerKind})
@@ -175,6 +202,9 @@ export async function startTournament(tournamentId: string): Promise<void> {
   const rows = await sql<TournamentRow[]>`SELECT * FROM tournaments WHERE id=${tournamentId}`;
   const t = rows[0];
   if (!t) throw new Error("tournament_not_found");
+
+  // The pool only pays out after registration closes, so the bracket starts after it.
+  if (new Date() < new Date(t.reg_close)) throw new Error("registration_still_open");
 
   const entryRows = await sql<EntryRow[]>`
     SELECT * FROM entries WHERE tournament_id=${tournamentId}
@@ -398,44 +428,41 @@ async function doFinalize(
   // placements(): { agentId (index), place }
   const places = placements(bracket);
 
-  // Top splitsBps.length players get prizes, but cap at actual placements
-  const nPrize    = Math.min(DEFAULT_SPLITS_BPS.length, places.length);
-  const pool      = BigInt(t.prize_pool_usdc6 ?? 0);
-  // Redistribute splits proportionally across the available prize slots
-  const activeBps = DEFAULT_SPLITS_BPS.slice(0, nPrize);
-  const bpsTotal  = activeBps.reduce((s, b) => s + b, 0);
-  const prizeList = activeBps.map((bps, i) => {
-    if (i === nPrize - 1) {
-      // Last slot absorbs rounding dust
-      const sofar = activeBps.slice(0, i).reduce((s, b) => s + (pool * BigInt(b) / BigInt(bpsTotal)), 0n);
-      return pool - sofar;
-    }
-    return pool * BigInt(bps) / BigInt(bpsTotal);
-  });
+  const pool = BigInt(t.prize_pool_usdc6 ?? 0);
 
-  // Build placement address array (for on-chain finalize)
+  // The contract wants exactly one registered entrant per split. Real finishers
+  // take the slots in order; any slot left over (cups under four players) goes to
+  // the champion, who therefore collects the unclaimed shares.
+  const champIdx = champion(bracket);
+  const champEntry = champIdx !== null ? entryRows[champIdx] : null;
+  if (!champEntry) throw new Error("no_champion");
+  const slotPlayers: string[] = [];
+  for (let i = 0; i < DEFAULT_SPLITS_BPS.length; i++) {
+    const place = places[i];
+    const entry = place ? entryRows[place.agentId] : null;
+    slotPlayers.push(entry?.player_id ?? champEntry.player_id);
+  }
   const placementAddrs: string[] = [];
-  for (let i = 0; i < nPrize; i++) {
-    const place   = places[i];
-    const entry   = place ? entryRows[place.agentId] : null;
-    const wallet  = entry ? await getPlayerWallet(entry.player_id).catch(() => null) : null;
-    placementAddrs.push(wallet?.address ?? "0x0000000000000000000000000000000000000000");
+  for (const playerId of slotPlayers) placementAddrs.push((await getPlayerWallet(playerId)).address);
 
-    if (entry) {
-      const prize = prizeList[i] ?? 0n;
-      await sql`
-        UPDATE entries SET placement=${i + 1}, prize_usdc6=${String(prize)}
-        WHERE tournament_id=${tournamentId} AND player_id=${entry.player_id}
-      `;
-    }
+  // Prize per player, computed exactly as TournamentPool.finalize() pays it:
+  // pool * bps / 10000 for each slot, remainder to the last slot.
+  const prizeByPlayer = new Map<string, bigint>();
+  let distributed = 0n;
+  DEFAULT_SPLITS_BPS.forEach((bps, i) => {
+    const share = i === DEFAULT_SPLITS_BPS.length - 1 ? pool - distributed : (pool * BigInt(bps)) / 10_000n;
+    distributed += share;
+    prizeByPlayer.set(slotPlayers[i]!, (prizeByPlayer.get(slotPlayers[i]!) ?? 0n) + share);
+  });
+  for (const p of places) {
+    const entry = entryRows[p.agentId];
+    if (!entry) continue;
+    await sql`
+      UPDATE entries SET placement=${p.place}, prize_usdc6=${String(prizeByPlayer.get(entry.player_id) ?? 0n)}
+      WHERE tournament_id=${tournamentId} AND player_id=${entry.player_id}
+    `;
   }
 
-  // On-chain finalize — must succeed; surface errors so the job can be retried.
-  // Contract requires placementAddrs.length == splitsBps.length, which is nPrize.
-  // Pad with zero address if fewer unique placements than split slots.
-  while (placementAddrs.length < DEFAULT_SPLITS_BPS.length) {
-    placementAddrs.push("0x0000000000000000000000000000000000000000");
-  }
   await createContractExecution({
     walletId:             cfg.REFEREE_WALLET_ID,
     contractAddress:      cfg.POOL_ADDRESS,
@@ -451,8 +478,6 @@ async function doFinalize(
   `;
 
   // Notify
-  const champ = champion(bracket);
-  const champEntry = champ !== null ? entryRows[champ] : null;
   await redis.publish(`tournament:${tournamentId}`, JSON.stringify({
     type:        "tournament_done",
     tournamentId,
@@ -510,6 +535,6 @@ async function getPlayerWallet(playerId: string): Promise<{ address: string; wal
   if (rows[0]) {
     return { address: rows[0].address, walletId: rows[0].circle_wallet_id };
   }
-  // Fallback: referee relays
-  return { address: cfg.REFEREE_WALLET_ADDRESS ?? "", walletId: cfg.REFEREE_WALLET_ID };
+  // Cups pay entrants onchain, so every entrant needs their own wallet.
+  throw new Error("wallet_required");
 }

@@ -46,6 +46,7 @@
       "name": "@final-move/web",
       "version": "0.1.0",
       "dependencies": {
+        "@final-move/chess": "workspace:*",
         "@final-move/shared": "workspace:*",
         "@final-move/ui": "workspace:*",
         "next": "^15",

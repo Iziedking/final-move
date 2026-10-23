@@ -36,9 +36,9 @@ async function upsertUserOnServer(xId: string, handle: string, avatar: string) {
       method: "POST",
       headers: {
         "Content-Type":   "application/json",
-        "X-Internal-Key": INTERNAL_SECRET,
+        "X-Internal-Secret": INTERNAL_SECRET,
       },
-      body: JSON.stringify({ xId, handle, avatar }),
+      body: JSON.stringify({ id: xId, handle, avatar }),
       signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) {

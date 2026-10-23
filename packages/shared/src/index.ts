@@ -130,7 +130,15 @@ export interface WsGameEnd {
   ratingAfter?: { mu: number; sigma: number };
 }
 
+/** A request the server could not act on, with a stable code and a readable message. */
+export interface WsError {
+  type: "error";
+  code: string;
+  message: string;
+}
+
 export type ServerToAgent =
+  | WsError
   | WsHello
   | WsGameStart
   | WsYourTurn

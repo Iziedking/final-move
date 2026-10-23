@@ -14,21 +14,24 @@ export interface GameWsState {
   drawOfferedBy: string | null;
   ratingDelta: { white: number; black: number } | null;
   rematchGameId: string | null;
+  /** True when the server rejected the join token; the caller should refresh it. */
+  authError: boolean;
 }
 
-export function useGameWs(gameId: string, playerId: string): GameWsState {
+export function useGameWs(gameId: string, token: string | null): GameWsState {
   const [connected, setConnected]       = useState(false);
   const [gameState, setGameState]       = useState<WsGameState | null>(null);
   const [chainRail, setChainRail]       = useState<ChainRailEntry[]>([]);
   const [drawOfferedBy, setDrawOfferedBy] = useState<string | null>(null);
   const [ratingDelta, setRatingDelta]   = useState<{ white: number; black: number } | null>(null);
   const [rematchGameId, setRematchGameId] = useState<string | null>(null);
+  const [authError, setAuthError]       = useState(false);
   const wsRef                         = useRef<WebSocket | null>(null);
   const retryRef                      = useRef(0);
   const deadRef                       = useRef(false);
 
   const connect = useCallback(() => {
-    if (deadRef.current) return;
+    if (deadRef.current || !token) return;
     // NEXT_PUBLIC_WS_URL: explicit WebSocket base (e.g. wss://api.finalmove.io)
     //   — used in the separate-origin deploy (API behind its own domain/port).
     // When absent, fall back to same-origin /ws so a reverse proxy or the
@@ -46,12 +49,17 @@ export function useGameWs(gameId: string, playerId: string): GameWsState {
     ws.onopen = () => {
       setConnected(true);
       retryRef.current = 0;
-      ws.send(JSON.stringify({ type: "join", gameId, playerId }));
+      setAuthError(false);
+      ws.send(JSON.stringify({ type: "join", gameId, token }));
     };
 
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data as string) as WsServerMsg;
+        const msg = JSON.parse(ev.data as string) as WsServerMsg | { type: "error"; reason?: string };
+        if (msg.type === "error") {
+          if (msg.reason === "invalid_token") setAuthError(true);
+          return;
+        }
         handleMsg(msg);
       } catch {}
     };
@@ -64,7 +72,7 @@ export function useGameWs(gameId: string, playerId: string): GameWsState {
     };
 
     ws.onerror = () => ws.close();
-  }, [gameId, playerId]);
+  }, [gameId, token]);
 
   const handleMsg = useCallback((msg: WsServerMsg) => {
     switch (msg.type) {
@@ -135,5 +143,5 @@ export function useGameWs(gameId: string, playerId: string): GameWsState {
     [gameId],
   );
 
-  return { connected, gameState, chainRail, sendMove, drawOfferedBy, ratingDelta, rematchGameId };
+  return { connected, gameState, chainRail, sendMove, drawOfferedBy, ratingDelta, rematchGameId, authError };
 }

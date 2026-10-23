@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
 import type React from "react";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { sanLine } from "@final-move/chess";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useGameWs } from "@/lib/useGameWs";
@@ -11,6 +12,7 @@ import { Clock } from "@/components/Clock";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { explorerTx } from "@/lib/utils";
 import { API_BASE } from "@/lib/api";
+import { apiFetch, getPlayer, type Player } from "@/lib/session";
 import type { PlayerInfo, ChainRailEntry } from "@/lib/types";
 
 interface Props {
@@ -55,7 +57,7 @@ const STATE_LABEL: Record<string, string> = {
   final:    "final",
 };
 
-function ChainRailPanel({ entries }: { entries: ChainRailEntry[] }) {
+function ChainRailPanel({ entries, sans }: { entries: ChainRailEntry[]; sans: string[] }) {
   const finalCount = entries.filter((e) => e.state === "final").length;
   return (
     <div className="flex flex-col gap-1.5">
@@ -83,7 +85,7 @@ function ChainRailPanel({ entries }: { entries: ChainRailEntry[] }) {
               {e.ply}.
             </span>
             <span className="mono shrink-0 font-semibold flex-1" style={{ color: "rgb(var(--ink-2))" }}>
-              {e.san || "—"}
+              {sans[e.ply - 1] ?? e.san ?? "—"}
             </span>
             <span className="ml-auto text-[9px] font-bold shrink-0 uppercase" style={{ color: STATE_DOT[e.state] }}>
               {STATE_LABEL[e.state]}
@@ -110,11 +112,13 @@ function ChainRailPanel({ entries }: { entries: ChainRailEntry[] }) {
 // ── SAN move list ─────────────────────────────────────────────────────────────
 interface SanMoveListProps {
   chainRail: ChainRailEntry[];
+  /** SAN for each ply, index 0 = ply 1. */
+  sans: string[];
   reviewPly: number | null;
   onReviewPly: (ply: number | null) => void;
 }
 
-function SanMoveList({ chainRail, reviewPly, onReviewPly }: SanMoveListProps) {
+function SanMoveList({ chainRail, sans, reviewPly, onReviewPly }: SanMoveListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   // Sort ascending
   const sorted = [...chainRail].sort((a, b) => a.ply - b.ply);
@@ -176,7 +180,7 @@ function SanMoveList({ chainRail, reviewPly, onReviewPly }: SanMoveListProps) {
                   }}
                   title={`Ply ${m.ply} — ${STATE_LABEL[m.state]}`}
                 >
-                  {m.san || m.ply}
+                  {sans[m.ply - 1] ?? m.san ?? m.ply}
                 </button>
               );
             })}
@@ -298,11 +302,25 @@ function ReconnectingBanner({ connected }: { connected: boolean }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export function GameClient({ gameId, playerId: injectedPlayerId, myColor: injectedColor }: Props): React.JSX.Element {
-  const { data: session } = useSession();
-  const playerId = injectedPlayerId ?? session?.user?.id ?? "guest";
+  const { data: session, status: sessionStatus } = useSession();
   const router   = useRouter();
+  const signedInId: string | null = session?.user?.id ?? null;
 
-  const { connected, gameState, chainRail, sendMove, drawOfferedBy, ratingDelta, rematchGameId } = useGameWs(gameId, playerId);
+  // The API issues the identity: a user token when signed in, a guest token otherwise.
+  const [player, setPlayer] = useState<Player | null>(null);
+  useEffect(() => {
+    if (sessionStatus === "loading") return;
+    getPlayer(signedInId).then(setPlayer).catch(() => setPlayer(null));
+  }, [sessionStatus, signedInId]);
+  const playerId = player?.playerId ?? injectedPlayerId ?? "";
+
+  const { connected, gameState, chainRail, sendMove, drawOfferedBy, ratingDelta, rematchGameId, authError } =
+    useGameWs(gameId, player?.token ?? null);
+
+  // An expired or rejected token: fetch a fresh one and the socket rejoins with it.
+  useEffect(() => {
+    if (authError) getPlayer(signedInId, true).then(setPlayer).catch(() => {});
+  }, [authError, signedInId]);
 
   const [legalMoves, setLegalMoves]       = useState<string[]>([]);
   const [manualFlip, setManualFlip]       = useState(false);
@@ -321,28 +339,23 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
       .catch(() => {});
   }, [gameId, gameState?.fen, gameState?.status]);
 
-  // Fetch replay FEN when reviewing a historical ply
+  // SAN for the move list and the position after every ply, computed from the
+  // authoritative UCI record so review needs no server round trip.
+  const line = useMemo(() => sanLine(gameState?.moves ?? []), [gameState?.moves]);
   useEffect(() => {
-    if (reviewPly === null) { setReviewFen(null); return; }
-    fetch(`${API_BASE}/v1/games/${gameId}/fen-at/${reviewPly}`)
-      .then((r) => r.json())
-      .then((d: { fen?: string }) => setReviewFen(d.fen ?? null))
-      .catch(() => setReviewFen(null));
-  }, [gameId, reviewPly]);
+    setReviewFen(reviewPly === null ? null : (line.fens[reviewPly] ?? null));
+  }, [reviewPly, line]);
 
   const handleRematch = useCallback(async () => {
     setRematchLoading(true);
-    await fetch(`${API_BASE}/v1/games/${gameId}/rematch`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ playerId }),
-    }).catch(() => {});
+    await apiFetch(`/v1/games/${gameId}/rematch`, { method: "POST" }, signedInId).catch(() => {});
     setRematchLoading(false);
-  }, [gameId, playerId]);
+  }, [gameId, signedInId]);
 
   // Navigate to rematch game when ready
   useEffect(() => {
-    if (rematchGameId) router.push(`/game/${rematchGameId}?pid=${playerId}`);
-  }, [rematchGameId, playerId, router]);
+    if (rematchGameId) router.push(`/game/${rematchGameId}`);
+  }, [rematchGameId, router]);
 
   // ── Loading states ────────────────────────────────────────────────────────
   if (!gameState && !connected) {
@@ -478,10 +491,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
               <button
                 onClick={() => {
                   if (confirm("Resign this game?")) {
-                    fetch(`${API_BASE}/v1/games/${gameId}/resign`, {
-                      method: "POST", headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ playerId }),
-                    }).catch(() => {});
+                    apiFetch(`/v1/games/${gameId}/resign`, { method: "POST" }, signedInId).catch(() => {});
                   }
                 }}
                 className="pop-btn pop-btn-danger flex-1 rounded-2xl px-3 py-2 text-sm font-bold"
@@ -492,10 +502,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
                 disabled={drawSent}
                 onClick={() => {
                   setDrawSent(true);
-                  fetch(`${API_BASE}/v1/games/${gameId}/draw-offer`, {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ playerId }),
-                  }).catch(() => {});
+                  apiFetch(`/v1/games/${gameId}/draw-offer`, { method: "POST" }, signedInId).catch(() => {});
                 }}
                 className="pop-btn-ghost pop-btn flex-1 rounded-2xl px-3 py-2 text-sm font-bold"
               >
@@ -515,6 +522,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
             </p>
             <SanMoveList
               chainRail={chainRail}
+              sans={line.san}
               reviewPly={reviewPly}
               onReviewPly={setReviewPly}
             />
@@ -526,7 +534,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
               <p className="text-[10px] font-extrabold uppercase tracking-widest mb-2 font-display" style={{ color: "rgb(var(--ink-3))" }}>
                 Chain
               </p>
-              <ChainRailPanel entries={chainRail} />
+              <ChainRailPanel entries={chainRail} sans={line.san} />
             </div>
           )}
 
@@ -540,10 +548,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
               <div className="flex gap-1.5">
                 <button
                   onClick={() => {
-                    fetch(`${API_BASE}/v1/games/${gameId}/draw-offer`, {
-                      method: "POST", headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ playerId }),
-                    }).catch(() => {});
+                    apiFetch(`/v1/games/${gameId}/draw-offer`, { method: "POST" }, signedInId).catch(() => {});
                   }}
                   className="pop-btn rounded-full px-3 py-1 text-xs"
                 >Accept</button>

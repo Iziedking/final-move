@@ -26,13 +26,23 @@ export interface QueueEntry {
   timeControl: TimeControl;
   rating:      Rating;
   enqueuedAt:  number; // ms
-  /** Called with the opponent's entry when a pair is found; null = timeout/no match. */
-  resolve:     (opponent: QueueEntry | null) => void;
+  /**
+   * Called once per entry: with the opponent and the created game id when a pair is
+   * found (gameId null if creation failed), or with null on timeout/no match.
+   */
+  resolve:     (opponent: QueueEntry | null, gameId?: string | null) => void;
+  /** Set when the entry has been paired, so the timeout path stays quiet. */
+  matched?:    boolean;
   // Player's wallet details (needed to create the game on match)
   walletId:    string;
   address:     string;
   kind:        "user" | "agent" | "bot";
 }
+
+/** Creates the game for a matched pair exactly once; registered by the server at boot. */
+type MatchHandler = (a: QueueEntry, b: QueueEntry) => Promise<string>;
+let matchHandler: MatchHandler | null = null;
+export function setMatchHandler(fn: MatchHandler): void { matchHandler = fn; }
 
 // In-memory queue per (class, timeControl)
 const queues = new Map<string, QueueEntry[]>();
@@ -70,6 +80,7 @@ export function enqueue(entry: QueueEntry): void {
   // Widen window every second, give up after 30 s
   let elapsed = 0;
   const interval = setInterval(() => {
+    if (entry.matched) { clearInterval(interval); return; }
     elapsed += 1;
     if (elapsed >= 30) {
       clearInterval(interval);
@@ -99,12 +110,22 @@ function tryMatch(key: string) {
 
       const diff = Math.abs(conservative(a.rating) - conservative(b.rating));
       if (diff <= window) {
-        // Remove both from queue
+        // Remove both from queue, create one game, then tell each side about it.
         q.splice(j, 1);
         q.splice(i, 1);
-        // Cross-resolve: each gets the full opponent entry so the caller can create a game
-        a.resolve(b);
-        b.resolve(a);
+        a.matched = true;
+        b.matched = true;
+        void (async () => {
+          let gameId: string | null = null;
+          try {
+            if (!matchHandler) throw new Error("no match handler registered");
+            gameId = await matchHandler(a, b);
+          } catch (e) {
+            console.error("[matchmaking] game creation failed:", (e as Error).message);
+          }
+          a.resolve(b, gameId);
+          b.resolve(a, gameId);
+        })();
         return;
       }
     }
@@ -138,6 +159,11 @@ export async function createChallenge(
   };
   await redis.set(`challenge:${code}`, JSON.stringify(val), "EX", CHALLENGE_TTL_S);
   return code;
+}
+
+export async function peekChallenge(code: string): Promise<Challenge | null> {
+  const raw = await redis.get(`challenge:${code}`);
+  return raw ? (JSON.parse(raw) as Challenge) : null;
 }
 
 export async function acceptChallenge(code: string): Promise<Challenge | null> {

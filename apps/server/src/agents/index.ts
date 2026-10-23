@@ -61,8 +61,9 @@ export async function registerAgent(opts: {
   let walletAddress = "";
   let walletId      = "";
   try {
-    const { createWallet } = await import("../chain/circle.ts");
-    const wallets = await createWallet(`agent:${id}`);
+    const { createWallet, uuidV5 } = await import("../chain/circle.ts");
+    // Circle requires a UUID idempotency key; derive a stable one per agent.
+    const wallets = await createWallet(uuidV5(`agent-wallet:${id}`));
     const w = wallets[0];
     if (w) {
       walletAddress = w.address;

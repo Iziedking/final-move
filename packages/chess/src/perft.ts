@@ -9,6 +9,7 @@ import {
   type Position,
 } from "./engine.js";
 import { bestCandidates } from "./search.js";
+import { sanLine } from "./san.js";
 import { buildBracket, nextMatch, recordResult, champion, placements, isComplete } from "./bracket.js";
 
 // Perft: count leaf nodes of the legal-move tree to a depth. Matching the known
@@ -104,5 +105,18 @@ check("runner-up is 2nd seed", pl.find((p) => p.place === 2)?.agentId ?? 0, 2);
 check("semifinal losers share 3rd", pl.filter((p) => p.place === 3).length, 2);
 check("quarterfinal losers share 5th", pl.filter((p) => p.place === 5).length, 4);
 
+// SAN: captures, castling, mate, disambiguation, en passant, promotion.
+{
+  const ruy = sanLine(["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5c6", "d7c6", "e1g1"]);
+  checkStr("san: Ruy Lopez exchange with castling", ruy.san.join(" "), "e4 e5 Nf3 Nc6 Bb5 a6 Bxc6 dxc6 O-O");
+  checkStr("san: fool's mate", sanLine(["f2f3", "e7e5", "g2g4", "d8h4"]).san.join(" "), "f3 e5 g4 Qh4#");
+  checkStr("san: knight file disambiguation", sanLine(["b1d2"], "4k3/8/8/8/8/8/8/1N2KN2 w - - 0 1").san[0] ?? "", "Nbd2");
+  checkStr("san: rook rank disambiguation", sanLine(["a1a4"], "4k3/8/8/R7/8/8/8/R3K3 w - - 0 1").san[0] ?? "", "R1a4");
+  checkStr("san: en passant", sanLine(["e2e4", "a7a6", "e4e5", "d7d5", "e5d6"]).san.slice(-1)[0] ?? "", "exd6");
+  checkStr("san: promotion with check", sanLine(["a7a8q"], "7k/P7/8/8/8/8/8/4K3 w - - 0 1").san[0] ?? "", "a8=Q+");
+  check("san: fens track every ply", ruy.fens.length, 10);
+  checkStr("san: stops at an illegal move", sanLine(["e2e4", "e2e4"]).san.join(" "), "e4");
+}
+
 console.log(failures === 0 ? "\nall chess checks passed — engine, brain, games, and bracket" : `\n${failures} chess checks FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+(globalThis as { process?: { exit(code: number): never } }).process?.exit(failures === 0 ? 0 : 1);

@@ -1,11 +1,10 @@
 "use client";
-import { API_BASE } from "@/lib/api";
+import { apiFetch, describeError } from "@/lib/session";
 import Link from "next/link";
 import type React from "react";
 import { useEffect, useState } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
-const API = API_BASE;
 
 interface Deposit {
   stakeOfferId: string;
@@ -29,10 +28,10 @@ export default function WalletClient({ userId }: { userId: string }): React.JSX.
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    fetch(`${API}/v1/wallet/${userId}`)
+    apiFetch(`/v1/wallet/${userId}`, {}, userId)
       .then((r) => r.json() as Promise<WalletData | { error: string }>)
-      .then((j) => { if ("error" in j) setErr(j.error); else setData(j); })
-      .catch(() => setErr("failed to load wallet"))
+      .then((j) => { if ("error" in j) setErr(describeError(j.error)); else setData(j); })
+      .catch(() => setErr("We could not load your wallet. Try again in a moment."))
       .finally(() => setLoading(false));
   }, [userId]);
 

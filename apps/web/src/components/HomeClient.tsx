@@ -1,11 +1,13 @@
 "use client";
 import type React from "react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import type { Session } from "next-auth";
 import { signIn, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { getGuestId } from "@/lib/utils";
+import { apiFetch, describeError } from "@/lib/session";
+import { API_BASE } from "@/lib/api";
+import { explorerTx } from "@/lib/utils";
 import { HvMScoreboard } from "@/components/HvMScoreboard";
 import { BotAvatar } from "@/components/BotAvatar";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -102,32 +104,52 @@ function BoardGrid() {
 }
 
 /* ── Scrolling chain-status ticker ─────────────────────────────────────── */
+interface FeedMove { gameId: string; ply: number; uci: string; txHash: string; finalMs: number | null }
+
+/** Real moves as they land on Arc. Each one links to its transaction. */
 function ChainTicker() {
-  const items = [
-    "e2→e4  confirmed ✓",
-    "d7→d5  confirmed ✓",
-    "g1→f3  confirmed ✓",
-    "c7→c5  confirmed ✓",
-    "f1→b5  confirmed ✓",
-    "a7→a6  confirmed ✓",
-    "b5→a4  confirmed ✓",
-    "b7→b5  confirmed ✓",
-  ];
-  const doubled = [...items, ...items]; // seamless loop
+  const [moves, setMoves] = useState<FeedMove[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch(`${API_BASE}/v1/feed/recent`)
+        .then((r) => (r.ok ? r.json() as Promise<{ moves: FeedMove[] }> : { moves: [] }))
+        .then((d) => { if (alive) setMoves(d.moves); })
+        .catch(() => { if (alive) setMoves([]); });
+    void load();
+    const timer = setInterval(load, 15_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
+
+  const shell = "w-full overflow-hidden border-y-2 py-2";
+  const shellStyle = { borderColor: "rgb(var(--ink) / 0.10)", background: "rgb(var(--teal-light))" };
+  if (moves === null) return <div className={shell} style={{ ...shellStyle, height: 34 }} aria-hidden />;
+  if (moves.length === 0) {
+    return (
+      <div className={`${shell} text-center font-mono text-[11px] font-bold`} style={{ ...shellStyle, color: "rgb(var(--teal-deep))" }}>
+        Moves appear here the moment they are final on Arc.
+      </div>
+    );
+  }
+  const label = (m: FeedMove) =>
+    `${m.uci.slice(0, 2)}→${m.uci.slice(2, 4)}${m.uci[4] ? `=${m.uci[4].toUpperCase()}` : ""}  final${m.finalMs !== null ? ` in ${(m.finalMs / 1000).toFixed(1)} s` : ""}`;
+  const doubled = [...moves, ...moves]; // seamless loop
   return (
-    <div
-      className="w-full overflow-hidden border-y-2 py-2"
-      style={{ borderColor: "rgb(var(--ink) / 0.10)", background: "rgb(var(--teal-light))" }}
-    >
+    <div className={shell} style={shellStyle}>
       <div className="flex gap-6 animate-chain-scroll whitespace-nowrap" style={{ width: "max-content" }}>
-        {doubled.map((item, i) => (
-          <span
-            key={i}
-            className="font-mono text-[11px] font-bold"
+        {doubled.map((m, i) => (
+          <a
+            key={`${m.txHash}-${i}`}
+            href={explorerTx(m.txHash)}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-hidden={i >= moves.length}
+            tabIndex={i >= moves.length ? -1 : 0}
+            className="font-mono text-[11px] font-bold hover:underline"
             style={{ color: "rgb(var(--teal-deep))" }}
           >
-            {item}
-          </span>
+            {label(m)}
+          </a>
         ))}
       </div>
     </div>
@@ -277,23 +299,21 @@ function PlayModal({ session, onClose }: { session: Session | null; onClose: () 
   const handlePlay = async () => {
     setLoading(true); setError(null);
     try {
-      const res = await fetch("/v1/games", {
+      const res = await apiFetch("/v1/games", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           opponentId:   botId,
           timeControl:  timeCtl,
-          playerId:     session?.user?.id ?? getGuestId(),
           playerHandle: session?.user?.handle ?? session?.user?.name ?? "Guest",
           playerAvatar: session?.user?.image ?? undefined,
         }),
-      });
+      }, session?.user?.id ?? null);
       if (!res.ok) {
-        const body = await res.json() as { error?: string };
-        throw new Error(body.error ?? "Failed to create game");
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(describeError(body.error));
       }
-      const data = await res.json() as { gameId: string; playerId: string; color: "w" | "b" };
-      router.push(`/game/${data.gameId}?pid=${data.playerId}&color=${data.color}`);
+      const data = await res.json() as { gameId: string; color: "w" | "b" };
+      router.push(`/game/${data.gameId}?color=${data.color}`);
     } catch (e) { setError((e as Error).message); setLoading(false); }
   };
 

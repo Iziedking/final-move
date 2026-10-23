@@ -183,9 +183,9 @@ async function callTool(
         walletId:    "",
         address:     "",
         kind:        "agent" as const,
-        resolve: async (opponent) => {
-          const status = opponent ? "matched" : "no_match";
-          await redis.set(`mm:${ticketId}`, JSON.stringify({ status, opponentId: opponent?.playerId }), "EX", 60);
+        resolve: async (opponent, gameId) => {
+          const status = opponent ? (gameId ? "matched" : "error") : "no_match";
+          await redis.set(`mm:${ticketId}`, JSON.stringify({ status, gameId: gameId ?? undefined, opponentId: opponent?.playerId }), "EX", 60);
         },
       });
       return { ticketId, message: `Queued for ${tc}. Poll /v1/matchmaking/queue/${ticketId} for match.` };

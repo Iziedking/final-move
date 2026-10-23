@@ -463,7 +463,6 @@ export const migrations: { name: string; sql: string }[] = [
         ON chain_events (chain_game_id)
         WHERE chain_game_id IS NOT NULL;
 
-      RAISE NOTICE '[009] back-filled chain_game_id on chain_events';
     `,
   },
 ];

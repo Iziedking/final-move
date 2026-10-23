@@ -1,5 +1,6 @@
 "use client";
 import { API_BASE } from "@/lib/api";
+import { apiFetch, describeError } from "@/lib/session";
 import Link from "next/link";
 import type React from "react";
 import { useState, useEffect } from "react";
@@ -33,21 +34,10 @@ export function ChallengeAcceptClient({ code }: { code: string }): React.JSX.Ele
     if (!challenge) return;
     setAccepting(true);
     try {
-      const res = await fetch(`${API_BASE}/v1/games`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          opponentId:   challenge.challengerId,
-          timeControl:  challenge.timeControl,
-          playerId:     session.user.id,
-          playerHandle: session.user.handle ?? session.user.name ?? "Player",
-          playerAvatar: session.user.image ?? undefined,
-          gameClass:    challenge.gameClass,
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to create game");
-      const data = await res.json() as { gameId: string; color: "w" | "b" };
-      router.push(`/game/${data.gameId}?pid=${session.user.id}&color=${data.color}`);
+      const res = await apiFetch(`/v1/challenges/${code}/accept`, { method: "POST" }, session.user.id);
+      const data = await res.json() as { gameId?: string; color?: "w" | "b"; error?: string };
+      if (!res.ok || !data.gameId) throw new Error(describeError(data.error));
+      router.push(`/game/${data.gameId}?color=${data.color}`);
     } catch (e) {
       setError((e as Error).message);
       setAccepting(false);

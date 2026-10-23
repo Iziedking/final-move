@@ -30,8 +30,11 @@ import {
   enqueue,
   createChallenge,
   acceptChallenge,
+  peekChallenge,
+  setMatchHandler,
   getRating,
 } from "./matchmaking/index.ts";
+import { ensureUser, displayName } from "./users/index.ts";
 import type { GameClass, TimeControl, QueueEntry } from "./matchmaking/index.ts";
 import { getLeaderboard } from "./ratings/index.ts";
 import {
@@ -124,6 +127,13 @@ app.post("/v1/session", async (c) => {
       userId?: string; handle?: string; avatar?: string;
     };
     if (!body.userId) return c.json({ error: "userId required" }, 400);
+    // Every signed-in user has a profile row and their own wallet before playing.
+    try {
+      await ensureUser(body.userId, { handle: body.handle, avatar: body.avatar });
+    } catch (e) {
+      console.error("[session] ensureUser failed:", (e as Error).message);
+      return c.json({ error: "wallet_unavailable" }, 503);
+    }
     const token = mintToken(body.userId, "user", 3600);
     return c.json({ token, playerId: body.userId, type: "user" });
   }
@@ -361,13 +371,16 @@ app.post("/v1/matchmaking/queue", async (c) => {
   if (!validTcs.includes(body.timeControl as TimeControl))
     return c.json({ error: "invalid_time_control" }, 400);
 
-  // Resolve caller's wallet + address
-  const walletRow = await sql<{ circle_wallet_id: string; address: string }[]>`
-    SELECT circle_wallet_id, address FROM wallets
-    WHERE owner_type='user' AND owner_id=${playerId} LIMIT 1
-  `;
-  if (!walletRow[0]) return c.json({ error: "no_wallet" }, 400);
-  const { circle_wallet_id: walletId, address } = walletRow[0];
+  // Human games need a wallet on each side; guests play the house bots instead.
+  if (caller.type !== "user") return c.json({ error: "sign_in_required" }, 403);
+  let walletId: string;
+  let address: string;
+  try {
+    ({ walletId, address } = await ensureUser(playerId, { handle: body.handle, avatar: body.avatarUrl }));
+  } catch (e) {
+    console.error("[matchmaking] ensureUser failed:", (e as Error).message);
+    return c.json({ error: "wallet_unavailable" }, 503);
+  }
 
   const ticketId = `ticket_${playerId}_${Date.now()}`;
   const ratingVal = await getRating(playerId, body.gameClass, body.timeControl);
@@ -383,45 +396,21 @@ app.post("/v1/matchmaking/queue", async (c) => {
     walletId,
     address,
     kind:        "user",
-    resolve: async (opponent) => {
+    resolve: async (opponent, gameId) => {
       if (!opponent) {
         // No match — indicate bot fallback available
         await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "no_match" }), "EX", 60);
         return;
       }
-      // Both sides present — create the game (white = lower ticketId alphabetically for determinism)
-      const [white, black] = playerId < opponent.playerId ? [entry, opponent] : [opponent, entry];
-      try {
-        const [baseSec, incSec] = body.timeControl.split("+").map(Number).map((n, i) => i === 0 ? n * 60 : n);
-        const game = await createGame({
-          whiteId: white.playerId, whiteKind: white.kind,
-          whiteAddr: white.address, whiteWalletId: white.walletId,
-          blackId: black.playerId, blackKind: black.kind,
-          blackAddr: black.address, blackWalletId: black.walletId,
-          gameClass: body.gameClass,
-          baseSec: baseSec!, incSec: incSec!,
-          timeControl: body.timeControl,
-        });
-        startWorker(white.walletId);
-        startWorker(black.walletId);
-        await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "matched", gameId: game.id, opponentId: opponent.playerId }), "EX", 120);
-        // Also notify the opponent's ticket if we can find it
-        const oppTicketKey = `mm:ticket:${opponent.playerId}`;
-        const oppTicketId = await redis.get(oppTicketKey);
-        if (oppTicketId) {
-          await redis.set(`mm:${oppTicketId}`, JSON.stringify({ status: "matched", gameId: game.id, opponentId: playerId }), "EX", 120);
-        }
-      } catch (e) {
-        console.error("[matchmaking] createGame failed:", (e as Error).message);
-        await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "error" }), "EX", 60);
-      }
+      // The matchmaker created the game once for both sides; just report it.
+      const status = gameId ? { status: "matched", gameId, opponentId: opponent.playerId } : { status: "error" };
+      await redis.set(`mm:${ticketId}`, JSON.stringify(status), "EX", 120);
     },
   };
 
-  // Store ticketId keyed by playerId so the opponent's resolve can find it
-  await redis.set(`mm:ticket:${playerId}`, ticketId, "EX", 120);
-  enqueue(entry);
+  // Mark the ticket queued before enqueueing: an instant match must not be overwritten.
   await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "queued" }), "EX", 120);
+  enqueue(entry);
   return c.json({ ticketId });
 });
 
@@ -442,21 +431,66 @@ app.delete("/v1/matchmaking/queue/:id", async (c) => {
 
 /** POST /v1/challenges — create a challenge link */
 app.post("/v1/challenges", async (c) => {
-  const body = await c.req.json() as {
-    challengerId: string;
-    gameClass:    GameClass;
-    timeControl:  TimeControl;
-  };
-  const code = await createChallenge(body.challengerId, body.gameClass, body.timeControl);
-  const url  = `${cfg.PUBLIC_WEB_URL ?? "http://localhost:3000"}/challenge/${code}`;
+  const caller = requirePlayer(c); if (!caller) return c.res;
+  // Both sides of a human game need their own wallet, so challengers must be signed in.
+  if (caller.type !== "user") return c.json({ error: "sign_in_required" }, 403);
+  const body = await c.req.json() as { gameClass: GameClass; timeControl: TimeControl };
+  if (!["3+2", "5+3", "10+5"].includes(body.timeControl)) return c.json({ error: "invalid_time_control" }, 400);
+  if (!["open", "human"].includes(body.gameClass)) return c.json({ error: "invalid_class" }, 400);
+  const code = await createChallenge(caller.sub, body.gameClass, body.timeControl);
+  const url  = `${cfg.PUBLIC_WEB_URL}/challenge/${code}`;
   return c.json({ code, url });
 });
 
-/** GET /v1/challenges/:code — look up a challenge */
+/** GET /v1/challenges/:code — look up a challenge without using it up */
 app.get("/v1/challenges/:code", async (c) => {
-  const challenge = await acceptChallenge(c.req.param("code"));
+  const challenge = await peekChallenge(c.req.param("code"));
   if (!challenge) return c.json({ error: "not_found" }, 404);
   return c.json(challenge);
+});
+
+/** POST /v1/challenges/:code/accept — the caller plays the challenger; the link is single use */
+app.post("/v1/challenges/:code/accept", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
+  if (caller.type !== "user") return c.json({ error: "sign_in_required" }, 403);
+  const peek = await peekChallenge(c.req.param("code"));
+  if (!peek) return c.json({ error: "not_found" }, 404);
+  if (peek.challengerId === caller.sub) return c.json({ error: "own_challenge" }, 400);
+  const challenge = await acceptChallenge(c.req.param("code"));
+  if (!challenge) return c.json({ error: "not_found" }, 404);
+
+  let me: { walletId: string; address: string };
+  let them: { walletId: string; address: string };
+  try {
+    me = await ensureUser(caller.sub);
+    them = await ensureUser(challenge.challengerId);
+  } catch (e) {
+    console.error("[challenge] wallet lookup failed:", (e as Error).message);
+    return c.json({ error: "wallet_unavailable" }, 503);
+  }
+  const [baseMin, incSec] = challenge.timeControl.split("+").map(Number);
+  const iAmWhite = Math.random() < 0.5;
+  const game = await createGame({
+    whiteId:   iAmWhite ? caller.sub : challenge.challengerId, whiteKind: "user",
+    whiteAddr: iAmWhite ? me.address : them.address, whiteWalletId: iAmWhite ? me.walletId : them.walletId,
+    blackId:   iAmWhite ? challenge.challengerId : caller.sub, blackKind: "user",
+    blackAddr: iAmWhite ? them.address : me.address, blackWalletId: iAmWhite ? them.walletId : me.walletId,
+    gameClass: challenge.gameClass,
+    baseSec: baseMin! * 60, incSec: incSec!,
+    timeControl: challenge.timeControl,
+  });
+  startWorker(me.walletId);
+  startWorker(them.walletId);
+  // Tell the challenger's open page where the game is.
+  await redis.set(`challenge:result:${challenge.code}`, JSON.stringify({ gameId: game.id }), "EX", 600);
+  return c.json({ gameId: game.id, color: iAmWhite ? "w" : "b" });
+});
+
+/** GET /v1/challenges/:code/result — lets the challenger find the game once accepted */
+app.get("/v1/challenges/:code/result", async (c) => {
+  const raw = await redis.get(`challenge:result:${c.req.param("code")}`);
+  if (!raw) return c.json({ status: "waiting" });
+  return c.json({ status: "accepted", ...JSON.parse(raw) });
 });
 
 /** POST /v1/games/:id/draw-offer — offer or accept a draw */
@@ -564,6 +598,28 @@ app.post("/v1/games/:id/rematch", async (c) => {
   return c.json({ status: "created", newGameId: newGame.id });
 });
 
+/** GET /v1/feed/recent — the latest moves confirmed onchain, for the home page ticker */
+let recentFeed: { at: number; body: unknown } | null = null;
+app.get("/v1/feed/recent", async (c) => {
+  if (recentFeed && Date.now() - recentFeed.at < 5_000) return c.json(recentFeed.body);
+  const rows = await sql<{ game_id: string; ply: number; uci: string; tx_hash: string; final_ms: number | null }[]>`
+    SELECT game_id, ply, uci, tx_hash,
+           (EXTRACT(EPOCH FROM (final_at - COALESCE(sent_at, submitted_at))) * 1000)::int AS final_ms
+    FROM moves
+    WHERE state = 'final' AND tx_hash IS NOT NULL
+    ORDER BY final_at DESC NULLS LAST
+    LIMIT 12
+  `;
+  const body = {
+    moves: rows.map((r) => ({
+      gameId: r.game_id, ply: r.ply, uci: r.uci, txHash: r.tx_hash,
+      finalMs: r.final_ms !== null && r.final_ms >= 0 ? r.final_ms : null,
+    })),
+  };
+  recentFeed = { at: Date.now(), body };
+  return c.json(body);
+});
+
 /** GET /v1/watch — live and recent games for the Watch page */
 app.get("/v1/watch", async (c) => {
   const rows = await sql<{
@@ -598,14 +654,16 @@ app.get("/v1/watch", async (c) => {
 /** POST /v1/users/upsert — create or update a user (internal: web server → API server only) */
 app.post("/v1/users/upsert", async (c) => {
   if (!requireInternal(c)) return c.res;
-  const body = await c.req.json() as { id: string; handle: string; avatar?: string; xId?: string };
-  if (!body.id || !body.handle) return c.json({ error: "id and handle required" }, 400);
-  await sql`
-    INSERT INTO users (id, handle, avatar, x_id)
-    VALUES (${body.id}, ${body.handle}, ${body.avatar ?? null}, ${body.xId ?? null})
-    ON CONFLICT (id) DO UPDATE SET handle=${body.handle}, avatar=COALESCE(${body.avatar ?? null}, users.avatar)
-  `;
-  return c.json({ ok: true });
+  const body = await c.req.json() as { id?: string; handle?: string; avatar?: string; xId?: string };
+  const id = body.id ?? body.xId;
+  if (!id) return c.json({ error: "id required" }, 400);
+  try {
+    const wallet = await ensureUser(id, { handle: body.handle, avatar: body.avatar });
+    return c.json({ ok: true, address: wallet.address });
+  } catch (e) {
+    console.error("[users] ensureUser failed:", (e as Error).message);
+    return c.json({ error: "wallet_unavailable" }, 503);
+  }
 });
 
 /** POST /v1/agents — register an agent (requires signed-in session) */
@@ -655,8 +713,9 @@ app.post("/v1/agent/queue", async (c) => {
   const body = await c.req.json() as { timeControl?: TimeControl };
   const tc   = body.timeControl ?? "5+3";
 
-  // Get agent wallet
+  // Get agent wallet; without one the onchain game cannot be created
   const wallet = await getAgentWallet(agent.id);
+  if (!wallet?.walletId || !wallet.address) return c.json({ error: "wallet_unavailable" }, 503);
 
   const ticketId = `ticket_${agent.id}_${Date.now()}`;
   const rating   = await getRating(agent.id, "open", tc);
@@ -671,19 +730,18 @@ app.post("/v1/agent/queue", async (c) => {
     walletId:    wallet?.walletId ?? "",
     address:     wallet?.address ?? "",
     kind:        "agent",
-    resolve: async (opponent) => {
+    resolve: async (opponent, gameId) => {
       if (!opponent) {
         await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "no_match" }), "EX", 60);
         return;
       }
-      // Game is created by the first side's resolve (the human queue handler).
-      // Wait briefly then find the newly-created game for this agent.
-      await new Promise<void>((r) => setTimeout(r, 500));
+      if (!gameId) {
+        await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "error" }), "EX", 60);
+        return;
+      }
+      // The matchmaker created the game once for both sides.
       const agentGame = await sql<{ id: string; white_id: string; black_id: string }[]>`
-        SELECT id, white_id, black_id FROM games
-        WHERE (white_id=${agent.id} OR black_id=${agent.id})
-          AND status IN ('waiting','live')
-        ORDER BY created_at DESC LIMIT 1
+        SELECT id, white_id, black_id FROM games WHERE id=${gameId} LIMIT 1
       `;
       await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "matched", opponentId: opponent.playerId }), "EX", 60);
       if (agentGame[0]) {
@@ -701,8 +759,8 @@ app.post("/v1/agent/queue", async (c) => {
     },
   };
 
-  enqueue(entry);
   await redis.set(`mm:${ticketId}`, JSON.stringify({ status: "queued" }), "EX", 60);
+  enqueue(entry);
   return c.json({ ticketId, walletAddress: wallet?.address });
 });
 
@@ -710,6 +768,8 @@ app.post("/v1/agent/queue", async (c) => {
 
 /** POST /v1/stakes — create a stake offer before game creation */
 app.post("/v1/stakes", async (c) => {
+  // Offers bind two players' wallets to an amount, so only the server side may create them.
+  if (!requireInternal(c)) return c.res;
   const body = await c.req.json() as {
     whiteId:     string;
     blackId:     string;
@@ -951,12 +1011,29 @@ app.get("/v1/tournaments/:id", async (c) => {
 /** POST /v1/tournaments/:id/register — enter the tournament (self only) */
 app.post("/v1/tournaments/:id/register", async (c) => {
   const caller = requirePlayer(c); if (!caller) return c.res;
+  // Entrants register onchain from their own wallet; guests do not have one.
+  if (caller.type === "guest") return c.json({ error: "sign_in_required" }, 403);
   try {
     await registerEntry({
       tournamentId: c.req.param("id"),
       playerId:     caller.sub,       // always from token — never from body
       playerKind:   (caller.type === "agent" ? "agent" : "user") as "user" | "agent" | "bot",
     });
+    return c.json({ ok: true });
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+});
+
+/** POST /v1/tournaments/:id/register-bot — admin only: enter a house bot (fills brackets) */
+app.post("/v1/tournaments/:id/register-bot", async (c) => {
+  if (!requireAdmin(c)) return c.res;
+  const body = await c.req.json().catch(() => ({})) as { botId?: string };
+  await loadBots();
+  const bot = body.botId ? getBot(body.botId) : undefined;
+  if (!bot) return c.json({ error: "bot_not_found" }, 400);
+  try {
+    await registerEntry({ tournamentId: c.req.param("id"), playerId: bot.id, playerKind: "bot" });
     return c.json({ ok: true });
   } catch (e) {
     return c.json({ error: (e as Error).message }, 400);
@@ -1470,8 +1547,12 @@ async function buildFullGameState(gameId: string) {
   const game = getLiveGame(gameId);
   if (!game) return null;
 
-  const white = { id: game.whiteId, kind: game.whiteKind, handle: game.whiteId, color: "w" as const };
-  const black = { id: game.blackId, kind: game.blackKind, handle: game.blackId, color: "b" as const };
+  const [whiteName, blackName] = await Promise.all([
+    displayName(game.whiteId, game.whiteKind),
+    displayName(game.blackId, game.blackKind),
+  ]);
+  const white = { id: game.whiteId, kind: game.whiteKind, handle: whiteName, color: "w" as const };
+  const black = { id: game.blackId, kind: game.blackKind, handle: blackName, color: "b" as const };
 
   let clockWMs = 0, clockBMs = 0;
   try {
@@ -1715,6 +1796,10 @@ agentWss.on("connection", (ws, req) => {
         const tc   = qMsg.timeControl ?? "5+3";
         const rating = await getRating(agentId, "open", tc);
         const wallet = await getAgentWallet(agentId);
+        if (!wallet?.walletId || !wallet.address) {
+          send({ type: "error", code: "wallet_unavailable", message: "This agent has no wallet yet." });
+          return;
+        }
 
         const entry: QueueEntry = {
           playerId:    agentId,
@@ -1726,19 +1811,15 @@ agentWss.on("connection", (ws, req) => {
           walletId:    wallet?.walletId ?? "",
           address:     wallet?.address ?? "",
           kind:        "agent",
-          resolve: async (opponent) => {
-            if (!opponent) return; // no match, agent can re-queue
-            // Game is created by the human side's resolve; wait briefly then find it
-            await new Promise<void>((r) => setTimeout(r, 500));
+          resolve: async (opponent, gameId) => {
+            if (!opponent || !gameId) return; // no match (or creation failed), agent can re-queue
+            // The matchmaker created the game once for both sides.
             const rows = await sql<{
               id: string; white_id: string; black_id: string;
               white_kind: string; black_kind: string; base_sec: number; inc_sec: number; time_control: string;
             }[]>`
               SELECT id, white_id, black_id, white_kind, black_kind, base_sec, inc_sec, time_control
-              FROM games
-              WHERE (white_id=${agentId} OR black_id=${agentId})
-                AND status IN ('waiting','live')
-              ORDER BY created_at DESC LIMIT 1
+              FROM games WHERE id=${gameId} LIMIT 1
             `;
             if (!rows[0]) return;
             const g = rows[0];
@@ -1869,6 +1950,29 @@ async function main() {
   const bots = await loadBots();
   for (const bot of bots) {
     if (bot.walletId) startWorker(bot.walletId);
+  }
+
+  // One place creates matchmade games, so a pair always gets exactly one game.
+  setMatchHandler(async (a, b) => {
+    const [white, black] = Math.random() < 0.5 ? [a, b] : [b, a];
+    const [baseMin, incSec] = a.timeControl.split("+").map(Number);
+    const game = await createGame({
+      whiteId: white.playerId, whiteKind: white.kind, whiteAddr: white.address, whiteWalletId: white.walletId,
+      blackId: black.playerId, blackKind: black.kind, blackAddr: black.address, blackWalletId: black.walletId,
+      gameClass: a.gameClass,
+      baseSec: baseMin! * 60, incSec: incSec!,
+      timeControl: a.timeControl,
+    });
+    startWorker(white.walletId);
+    startWorker(black.walletId);
+    return game.id;
+  });
+
+  // Rehydrated games lose their bot loops with the old process; restart them.
+  for (const game of lg.values()) {
+    if (game.status !== "waiting" && game.status !== "live") continue;
+    if (game.whiteKind === "bot") scheduleBot(game.id, game.whiteId, "w");
+    if (game.blackKind === "bot") scheduleBot(game.id, game.blackId, "b");
   }
 
   // Initialize indexer head to near chain tip if not already set

@@ -13,7 +13,9 @@ const SQRT2PI = Math.sqrt(2 * Math.PI);
 
 // The draw margin, as a performance gap inside which a game is "too close to call". Chess between
 // comparable agents draws often, so this is deliberately non-trivial (~20% draw prior). Tunable.
-const DRAW_MARGIN = Number(process.env.CHESS_TS_DRAW_MARGIN ?? String(TS_SIGMA0 / 6)); // ~1.39
+// Read through globalThis: this module also runs in the browser, where `process` may not exist.
+const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+const DRAW_MARGIN = Number(env?.CHESS_TS_DRAW_MARGIN ?? String(TS_SIGMA0 / 6)); // ~1.39
 
 export interface Rating {
   mu: number;

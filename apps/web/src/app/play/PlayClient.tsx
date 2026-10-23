@@ -1,5 +1,5 @@
 "use client";
-import { API_BASE } from "@/lib/api";
+import { apiFetch, describeError } from "@/lib/session";
 import Link from "next/link";
 import type React from "react";
 import { useState, useEffect, useRef } from "react";
@@ -27,7 +27,6 @@ export function PlayClient(): React.JSX.Element {
   const [error, setError]         = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const serverUrl = API_BASE;
   const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   useEffect(() => () => stopPolling(), []);
 
@@ -35,16 +34,17 @@ export function PlayClient(): React.JSX.Element {
     if (!session?.user?.id) { setError("Sign in with X to join matchmaking."); return; }
     setError(null); setStatus("queued");
     try {
-      const res = await fetch(`${serverUrl}/v1/matchmaking/queue`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ playerId: session.user.id, handle: session.user.handle ?? session.user.name ?? "Player", avatarUrl: session.user.image ?? undefined, gameClass, timeControl: tc }),
-      });
-      const data = await res.json() as { ticketId: string };
+      const res = await apiFetch("/v1/matchmaking/queue", {
+        method: "POST",
+        body: JSON.stringify({ handle: session.user.handle ?? session.user.name ?? "Player", avatarUrl: session.user.image ?? undefined, gameClass, timeControl: tc }),
+      }, session.user.id);
+      const data = await res.json() as { ticketId?: string; error?: string };
+      if (!res.ok || !data.ticketId) { setStatus("idle"); setError(describeError(data.error)); return; }
       setTicketId(data.ticketId);
       pollRef.current = setInterval(async () => {
-        const r = await fetch(`${serverUrl}/v1/matchmaking/queue/${data.ticketId}`);
-        const d = await r.json() as { status: string };
-        if (d.status === "matched") { stopPolling(); setStatus("matched"); router.push("/"); }
+        const r = await apiFetch(`/v1/matchmaking/queue/${data.ticketId}`, {}, session.user.id);
+        const d = await r.json() as { status: string; gameId?: string };
+        if (d.status === "matched" && d.gameId) { stopPolling(); setStatus("matched"); router.push(`/game/${d.gameId}`); }
         else if (d.status === "no_match" || d.status === "expired") { stopPolling(); setStatus("idle"); setError("No match found. Try again or play a bot from Home."); }
       }, 2_000);
     } catch { setStatus("idle"); setError("Failed to join queue."); }
@@ -52,7 +52,7 @@ export function PlayClient(): React.JSX.Element {
 
   const handleCancel = async () => {
     stopPolling(); setStatus("idle");
-    if (ticketId) { await fetch(`${serverUrl}/v1/matchmaking/queue/${ticketId}`, { method: "DELETE" }).catch(() => {}); setTicketId(null); }
+    if (ticketId) { await apiFetch(`/v1/matchmaking/queue/${ticketId}`, { method: "DELETE" }, session?.user?.id ?? null).catch(() => {}); setTicketId(null); }
   };
 
   const inputCls = "w-full rounded-2xl border-2 px-3 py-2 text-[13px] font-semibold outline-none transition-colors";
@@ -126,21 +126,38 @@ export function PlayClient(): React.JSX.Element {
 
 function ChallengeLink({ gameClass, tc, inputCls, inputStyle }: { gameClass: GameClass; tc: TimeControl; inputCls: string; inputStyle: React.CSSProperties }): React.JSX.Element {
   const { data: session } = useSession();
+  const router = useRouter();
   const [url, setUrl]     = useState<string | null>(null);
+  const [code, setCode]   = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
 
   const generate = async () => {
     if (!session?.user?.id) return;
-    const res = await fetch(`${API_BASE}/v1/challenges`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challengerId: session.user.id, gameClass, timeControl: tc }) });
-    const d = await res.json() as { url: string };
-    setUrl(d.url);
+    setLinkError(null);
+    const res = await apiFetch("/v1/challenges", { method: "POST", body: JSON.stringify({ gameClass, timeControl: tc }) }, session.user.id);
+    const d = await res.json() as { url?: string; code?: string; error?: string };
+    if (!res.ok || !d.url || !d.code) { setLinkError(describeError(d.error)); return; }
+    setUrl(d.url); setCode(d.code);
   };
+
+  // Once the friend accepts, take the challenger to the game.
+  useEffect(() => {
+    if (!code) return;
+    const timer = setInterval(async () => {
+      const r = await apiFetch(`/v1/challenges/${code}/result`, {}, session?.user?.id ?? null).catch(() => null);
+      const d = r?.ok ? await r.json() as { status: string; gameId?: string } : null;
+      if (d?.status === "accepted" && d.gameId) { clearInterval(timer); router.push(`/game/${d.gameId}`); }
+    }, 2_000);
+    const stop = setTimeout(() => clearInterval(timer), 10 * 60_000);
+    return () => { clearInterval(timer); clearTimeout(stop); };
+  }, [code, router, session?.user?.id]);
   const copy = () => { if (url) { navigator.clipboard.writeText(url).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 2_000); } };
 
   return (
     <div className="sticker-card-sm p-5 flex flex-col gap-3">
       <p className="text-[11px] font-extrabold uppercase tracking-widest font-display" style={{ color: "rgb(var(--ink-3))" }}>Challenge a friend</p>
-      <p className="text-[12px] font-medium" style={{ color: "rgb(var(--ink-2))" }}>Share a link — valid for 10 minutes. They click and you&apos;re matched instantly.</p>
+      <p className="text-[12px] font-medium" style={{ color: "rgb(var(--ink-2))" }}>Share a link — valid for 10 minutes. When they open it, you both join the game.</p>
       {!url ? (
         <button onClick={() => { void generate(); }} disabled={!session?.user?.id}
           className="pop-btn-ghost pop-btn w-full rounded-2xl py-2 text-sm font-bold disabled:opacity-50">
@@ -150,10 +167,12 @@ function ChallengeLink({ gameClass, tc, inputCls, inputStyle }: { gameClass: Gam
         <div className="flex items-center gap-2">
           <input readOnly value={url} className={`${inputCls} flex-1`} style={inputStyle} />
           <button onClick={copy} className="pop-btn rounded-2xl px-3 py-2 text-[12px] font-extrabold">
-            {copied ? "✓" : "Copy"}
+            {copied ? "Copied" : "Copy"}
           </button>
         </div>
       )}
+      {url && <p className="text-[12px] font-medium" style={{ color: "rgb(var(--ink-3))" }}>Waiting for your friend to open the link. You will join the game automatically.</p>}
+      {linkError && <p role="alert" className="text-[12px] font-semibold" style={{ color: "rgb(var(--coral))" }}>{linkError}</p>}
     </div>
   );
 }
