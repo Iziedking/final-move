@@ -810,7 +810,7 @@ app.post("/v1/agent/queue", async (c) => {
 // Mainnet contracts are deployed with stakes switched off; refuse every stakes route there.
 const stakesOffOnMainnet: MiddlewareHandler = async (c, next) => {
   if (cfg.NETWORK === "mainnet") return c.json({ error: "stakes_disabled" }, 403);
-  await next();
+  return next();
 };
 app.use("/v1/stakes", stakesOffOnMainnet);
 app.use("/v1/stakes/*", stakesOffOnMainnet);
