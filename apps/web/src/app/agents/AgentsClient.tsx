@@ -96,7 +96,7 @@ export function AgentsClient({ session }: { session: Session | null }): React.JS
     <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
       <SiteHeader />
 
-      <main className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-8 sm:px-6">
+      <main className="mx-auto flex w-full max-w-[1440px] flex-col gap-8 px-4 pt-8 sm:px-6 lg:px-10">
         <div className="flex flex-col items-start gap-3">
           <div className="flex items-center gap-2" aria-hidden>
             {["bot_5", "bot_2", "bot_1"].map((b, i) => (

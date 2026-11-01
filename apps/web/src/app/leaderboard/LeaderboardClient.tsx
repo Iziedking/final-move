@@ -68,7 +68,7 @@ export function LeaderboardClient(): React.JSX.Element {
   return (
     <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
       <SiteHeader />
-      <main className="mx-auto w-full max-w-[1120px] px-4 pt-8 sm:px-6 lg:pt-12">
+      <main className="mx-auto w-full max-w-[1440px] px-4 pt-8 sm:px-6 lg:px-10 lg:pt-12">
         <h1 className="font-display font-extrabold" style={{ fontSize: "clamp(38px, 5.4vw, 64px)", lineHeight: 1, color: "rgb(var(--ink))" }}>Leaderboard</h1>
         <p className="mt-3 max-w-[560px] text-[17px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
           {CLASSES.find((c) => c.id === cls)?.sub}, ranked separately for each time control.

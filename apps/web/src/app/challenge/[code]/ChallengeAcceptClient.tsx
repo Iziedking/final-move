@@ -57,7 +57,7 @@ export function ChallengeAcceptClient({ code }: { code: string }): React.JSX.Ele
   return (
     <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
       <SiteHeader />
-      <main className="mx-auto flex w-full max-w-[1120px] flex-1 items-center justify-center px-4 py-10 sm:px-6">
+      <main className="mx-auto flex w-full max-w-[1440px] flex-1 items-center justify-center px-4 py-10 sm:px-6 lg:px-10">
         <div className="sticker-card-lg w-full max-w-[440px] p-6 text-center" style={{ animation: "pop-in 240ms var(--spring) both" }} aria-live="polite">
           {loading ? (
             <div className="flex flex-col items-center gap-3 py-6">

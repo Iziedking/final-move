@@ -116,7 +116,7 @@ export function PlayClient(): React.JSX.Element {
   return (
     <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
       <SiteHeader />
-      <main className="mx-auto w-full max-w-[1120px] px-4 pt-8 sm:px-6 lg:pt-12">
+      <main className="mx-auto w-full max-w-[1440px] px-4 pt-8 sm:px-6 lg:px-10 lg:pt-12">
         <h1 className="font-display font-extrabold" style={{ fontSize: "clamp(38px, 5.4vw, 64px)", lineHeight: 1, color: "rgb(var(--ink))" }}>
           Play a person
         </h1>

@@ -179,7 +179,7 @@ export default function CupClient(): React.JSX.Element {
     <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
       <SiteHeader />
 
-      <main className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-8 sm:px-6">
+      <main className="mx-auto flex w-full max-w-[1440px] flex-col gap-8 px-4 pt-8 sm:px-6 lg:px-10">
         <div>
           <h1 className="font-display font-extrabold" style={{ fontSize: "clamp(36px, 5vw, 60px)", lineHeight: 1.02, color: "rgb(var(--ink))" }}>Saturday Cup</h1>
           <p className="mt-2 max-w-[620px] text-[17px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>

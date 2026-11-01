@@ -162,7 +162,7 @@ export function HomeClient({ session }: Props): React.JSX.Element {
 
       <main className="flex flex-col">
         {/* Hero */}
-        <section className="mx-auto grid w-full max-w-[1120px] grid-cols-1 items-center gap-10 px-4 pb-12 pt-8 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,500px)] lg:pt-14">
+        <section className="mx-auto grid w-full max-w-[1440px] grid-cols-1 items-center gap-10 px-4 pb-12 pt-8 sm:px-6 lg:px-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,500px)] lg:pt-14">
           <div className="flex flex-col items-start gap-5 animate-fade-up">
             <span className="chip" style={{ background: "rgb(var(--amber))", color: "rgb(var(--candy-ink))" }}>
               <span className="h-2 w-2 rounded-full" style={{ background: "rgb(var(--ink))" }} /> Live on {NETWORK_LABEL}
@@ -211,7 +211,7 @@ export function HomeClient({ session }: Props): React.JSX.Element {
         <ChainTicker />
 
         {/* Ways to play */}
-        <section className="mx-auto w-full max-w-[1120px] px-4 pt-14 sm:px-6" aria-labelledby="ways">
+        <section className="mx-auto w-full max-w-[1440px] px-4 pt-14 sm:px-6 lg:px-10" aria-labelledby="ways">
           <h2 id="ways" className="mb-6 font-display font-extrabold" style={{ fontSize: "clamp(32px, 4.4vw, 50px)", lineHeight: 1.02, color: "rgb(var(--ink))" }}>
             Three ways to play
           </h2>
@@ -238,7 +238,7 @@ export function HomeClient({ session }: Props): React.JSX.Element {
         </section>
 
         {/* Cup and the scoreboard */}
-        <section className="mx-auto grid w-full max-w-[1120px] grid-cols-1 gap-6 px-4 pt-14 sm:px-6 md:grid-cols-2">
+        <section className="mx-auto grid w-full max-w-[1440px] grid-cols-1 gap-6 px-4 pt-14 sm:px-6 lg:px-10 md:grid-cols-2">
           <CupCard />
           <div className="flex flex-col gap-3">
             <HvMScoreboard />

@@ -55,7 +55,7 @@ export function SiteHeader(): React.JSX.Element {
 
   return (
     <header className="relative z-20 w-full">
-      <div className="mx-auto flex max-w-[1120px] items-center justify-between gap-3 px-4 pt-4 sm:px-6">
+      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-3 px-4 pt-4 sm:px-6 lg:px-10">
         <Wordmark />
 
         <nav className="hidden items-center gap-1 lg:flex" aria-label="Main">
@@ -110,7 +110,7 @@ export function SiteHeader(): React.JSX.Element {
         </div>
       </div>
 
-      <nav className="no-scrollbar mx-auto mt-3 flex max-w-[1120px] gap-2 overflow-x-auto px-4 pb-1.5 sm:px-6 lg:hidden" aria-label="Main">
+      <nav className="no-scrollbar mx-auto mt-3 flex max-w-[1440px] gap-2 overflow-x-auto px-4 pb-1.5 sm:px-6 lg:px-10 lg:hidden" aria-label="Main">
         {links.map((l) => (
           <Link
             key={l.href}
@@ -130,7 +130,7 @@ export function SiteHeader(): React.JSX.Element {
 /** Quiet footer with the facts that matter. */
 export function SiteFooter(): React.JSX.Element {
   return (
-    <footer className="mx-auto mt-auto w-full max-w-[1120px] px-4 pb-8 pt-12 sm:px-6">
+    <footer className="mx-auto mt-auto w-full max-w-[1440px] px-4 pb-8 pt-12 sm:px-6 lg:px-10">
       <div className="flex flex-col items-start justify-between gap-3 border-t-2 pt-5 text-[13px] font-bold sm:flex-row sm:items-center" style={{ borderColor: "rgb(var(--ink) / 0.12)", color: "rgb(var(--ink-3))" }}>
         <span>Final Move runs on {NETWORK_LABEL}. Moves cost gas in USDC, paid by the house.</span>
         <span className="flex gap-4">

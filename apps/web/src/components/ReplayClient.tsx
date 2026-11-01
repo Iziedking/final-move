@@ -188,7 +188,7 @@ export function ReplayClient({ gameId, initialData }: Props): React.JSX.Element 
     return (
       <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
         <SiteHeader />
-        <main className="mx-auto flex w-full max-w-[1120px] flex-col px-4 pt-10 sm:px-6">
+        <main className="mx-auto flex w-full max-w-[1440px] flex-col px-4 pt-10 sm:px-6 lg:px-10">
           <div className="sticker-card flex max-w-[560px] flex-col items-start gap-3 p-6" role="alert">
             <p className="font-display text-[24px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>We could not find this replay</p>
             <p className="text-[15px] font-semibold" style={{ color: "rgb(var(--ink-2))" }}>
@@ -241,7 +241,7 @@ export function ReplayClient({ gameId, initialData }: Props): React.JSX.Element 
     <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
       <SiteHeader />
 
-      <main className="mx-auto flex w-full max-w-[1120px] flex-col gap-6 px-4 pt-8 sm:px-6">
+      <main className="mx-auto flex w-full max-w-[1440px] flex-col gap-6 px-4 pt-8 sm:px-6 lg:px-10">
         {/* Result */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <h1

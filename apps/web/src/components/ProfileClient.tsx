@@ -33,7 +33,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col" style={{ background: "rgb(var(--sky))" }}>
       <SiteHeader />
-      <main className="mx-auto flex w-full max-w-[1120px] flex-col gap-6 px-4 pt-8 sm:px-6 lg:pt-12">{children}</main>
+      <main className="mx-auto flex w-full max-w-[1440px] flex-col gap-6 px-4 pt-8 sm:px-6 lg:px-10 lg:pt-12">{children}</main>
       <SiteFooter />
     </div>
   );
