@@ -1,3 +1,5 @@
+import { ARC_EXPLORER } from "./network";
+
 /** Format clock ms as m:ss */
 export function fmtClock(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -17,7 +19,7 @@ export function cx(...classes: (string | false | undefined | null)[]): string {
   return classes.filter(Boolean).join(" ");
 }
 
-/** Explorer link for Arc testnet */
+/** Explorer link for a transaction on the configured Arc network */
 export function explorerTx(hash: string): string {
-  return `https://explorer.testnet.arc.io/tx/${hash}`;
+  return `${ARC_EXPLORER}/tx/${hash}`;
 }

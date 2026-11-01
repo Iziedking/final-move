@@ -10,7 +10,7 @@
  */
 
 const BASE   = "http://localhost:3001";
-const WEB    = "http://localhost:5173";
+const WEB    = process.env.WEB_URL ?? "http://localhost:3000";
 let passed = 0, failed = 0, skipped = 0;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

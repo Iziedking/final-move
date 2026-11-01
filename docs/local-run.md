@@ -1,114 +1,64 @@
 # Local run guide
 
-Two supported topologies. Use **single-origin** for local development (default). Use **separate-origin** for staging or when deploying the web app and API on different hosts.
+For production, see `docs/deploy.md`.
 
----
-
-## Topology 1: single origin behind a proxy (default, recommended for local dev)
-
-Port 5173 is the single public port. `proxy.mjs` (repo root) routes requests by path prefix.
+## Shape
 
 ```
-Browser → :5173 (proxy.mjs)
-           ├── /v1/*, /ws, /mcp/*, /health → :3001 (API server)
-           └── everything else             → :3000 (Next.js)
+Browser → :3000 Next.js ──rewrites /v1, /mcp, /health──▶ :3001 API server
+Browser ─────────────── WebSocket ws://localhost:3001/ws ─▶ :3001 API server
 ```
 
-**Required `.env` keys (root):**
+Next.js rewrites cannot carry WebSocket upgrades, so the browser opens the game socket straight to the API. Set `NEXT_PUBLIC_WS_URL=ws://localhost:3001` for local runs (the app appends `/ws`).
 
-| Key | Example | Notes |
-|-----|---------|-------|
-| `ARC_RPC_URL` | `https://rpc.testnet.arc.io` | Arc testnet HTTP RPC |
-| `ARC_WS_URL` | `wss://rpc.testnet.arc.io` | Arc testnet WS RPC |
-| `CIRCLE_API_KEY` | `TEST_...` | Circle developer API key |
-| `ENTITY_SECRET` | 32-byte hex | Circle entity secret |
-| `REFEREE_WALLET_ID` | UUID | Circle wallet for signing moves |
-| `REFEREE_WALLET_ADDRESS` | `0x...` | Address of the referee wallet |
-| `TREASURY_WALLET_ID` | UUID | Circle wallet for fees |
-| `CIRCLE_WALLET_SET_ID` | UUID | Circle wallet set |
-| `LEDGER_ADDRESS` | `0x...` | FinalMoveLedger contract |
-| `ESCROW_ADDRESS` | `0x...` | MatchEscrow contract |
-| `POOL_ADDRESS` | `0x...` | TournamentPool contract |
-| `USDC_ADDRESS` | `0x...` | USDC contract on Arc testnet |
-| `DATABASE_URL` | `postgres://...@127.0.0.1:5432/finalmove` | Postgres |
-| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis |
-| `SESSION_SECRET` | 64-char hex | Minimum 32 bytes |
-| `BOT_WALLET_IDS` | `uuid1,uuid2,uuid3,uuid4,uuid5` | Five bot wallets, one per level |
+## Root `.env` (API server)
 
-**Required `apps/web/.env.local` keys:**
+Copy `.env.example` to `.env` and fill it in. The main keys:
 
-| Key | Example | Notes |
-|-----|---------|-------|
-| `AUTH_SECRET` | same value as `SESSION_SECRET` | NextAuth v5 secret |
-| `NEXT_PUBLIC_EXPLORER_URL` | `https://explorer.testnet.arc.io` | Arc block explorer |
+| Key | Local testnet value |
+|-----|---------|
+| `NETWORK` | `testnet` |
+| `ARC_RPC_URL` | `https://rpc.testnet.arc.io` |
+| `ARC_EXPLORER` | `https://explorer.testnet.arc.io` |
+| `CIRCLE_CHAIN` | `ARC-TESTNET` |
+| `CIRCLE_API_KEY`, `ENTITY_SECRET`, `CIRCLE_WALLET_SET_ID` | your Circle test credentials |
+| `REFEREE_WALLET_ID`, `REFEREE_WALLET_ADDRESS`, `TREASURY_WALLET_ID`, `BOT_WALLET_IDS` | Circle wallets |
+| `LEDGER_ADDRESS`, `ESCROW_ADDRESS`, `POOL_ADDRESS`, `DEPLOY_BLOCK` | from `deployments/5042002.json` |
+| `DATABASE_URL`, `REDIS_URL` | `postgres://...@127.0.0.1:5432/finalmove`, `redis://127.0.0.1:6379` |
+| `SESSION_SECRET`, `INTERNAL_SECRET`, `ADMIN_TOKEN` | `openssl rand -hex 32` each |
+| `PUBLIC_WEB_URL` | `http://localhost:3000` |
 
-**No `NEXT_PUBLIC_API_ORIGIN` or `NEXT_PUBLIC_WS_URL` needed** — the proxy handles routing.
+## `apps/web/.env.local` (web)
 
-**Start everything:**
+| Key | Local value |
+|-----|---------|
+| `AUTH_SECRET` | `openssl rand -hex 32` |
+| `INTERNAL_SECRET` | same as the API's |
+| `API_ORIGIN` | `http://localhost:3001` |
+| `NEXT_PUBLIC_WS_URL` | `ws://localhost:3001` |
+| `NEXT_PUBLIC_NETWORK` | `testnet` |
+| `X_CLIENT_ID`, `X_CLIENT_SECRET` | from your X developer app (callback `http://localhost:3000/api/auth/callback/twitter`) |
+
+The web app also reads the root `.env` when it exists, so shared values can live there.
+
+## Start
 
 ```sh
-docker compose up -d          # Postgres + Redis
+docker compose up -d                 # Postgres + Redis on 127.0.0.1
 bun install
-bun run dev                   # starts proxy (:5173), API (:3001), Next.js (:3000) together
+bun run server                       # API on :3001, runs migrations on start
+bun run web                          # Next.js on :3000
 ```
 
-See `package.json` `dev` script or `scripts/start-local.sh` for the exact command sequence.
-
----
-
-## Topology 2: separate API origin (staging / production)
-
-The web app and API run on different hosts or ports. The browser reaches the API directly — no proxy involved. Next.js `rewrites()` are irrelevant here.
-
-```
-Browser → :443 (web, e.g. app.finalmo.ve)
-           └── NEXT_PUBLIC_API_ORIGIN / NEXT_PUBLIC_WS_URL → api.finalmo.ve
-```
-
-**Additional required vars in `apps/web/.env.local` (or your host's env UI):**
-
-| Key | Example | Notes |
-|-----|---------|-------|
-| `NEXT_PUBLIC_API_ORIGIN` | `https://api.finalmo.ve` | Full origin, no trailing slash. Set this and the browser will prefix all `/v1/...` calls with it. |
-| `NEXT_PUBLIC_WS_URL` | `wss://api.finalmo.ve/ws` | WebSocket URL for the game socket. |
-
-**Also required on the server (Next.js process):**
-
-| Key | Example | Notes |
-|-----|---------|-------|
-| `API_ORIGIN` | `http://api-internal:3001` | Used by server-rendered pages (`/g/[id]`, `/profile/[id]`) to fetch data. Can be an internal hostname. |
-
-**CORS:** the API server must allow the web origin. Add the `PUBLIC_WEB_URL` to the API's CORS allowlist. It is already read from root `.env`.
-
-**WebSocket proxy note:** Next.js `rewrites()` cannot proxy WebSocket upgrades. When using separate-origin, the browser connects directly to `NEXT_PUBLIC_WS_URL` — no proxy needed and no Next.js rewrite required.
-
----
+`scripts/start-local.sh` runs the same steps in one terminal.
 
 ## Health checks
 
 | Endpoint | Expected |
 |----------|----------|
-| `GET /health` (API port 3001) | `{"ok":true}` |
-| `GET /` (Next.js port 3000) | HTTP 200 |
-| `GET /` (proxy port 5173, single-origin only) | HTTP 200 |
+| `GET http://localhost:3001/health` | `{"ok":true,...}` |
+| `GET http://localhost:3000/` | HTTP 200 |
 
----
+## Migrations
 
-## Database migrations
-
-Migrations run automatically on API server startup. To run manually:
-
-```sh
-cd apps/server && bun run migrate
-```
-
-Current migrations: 001–008. Migration 008 fixes ply-matching in the QA repair and reverts any wrong status promotions.
-
----
-
-## What `proxy.mjs` does (single-origin only)
-
-- Zero runtime dependencies — plain Node `http` + `net`.
-- Routes HTTP by pathname prefix: `/v1/*`, `/ws`, `/mcp/*`, `/health` → API; all others → Next.js.
-- Forwards `Upgrade: websocket` connections natively for `/ws` and passes through `Upgrade` for Next.js HMR.
-- Runs on port 5173. Start it with `node proxy.mjs` or via `bun run dev`.
+They run on API start. To run them alone: `bun run migrate`.

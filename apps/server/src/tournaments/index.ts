@@ -463,14 +463,24 @@ async function doFinalize(
     `;
   }
 
-  await createContractExecution({
-    walletId:             cfg.REFEREE_WALLET_ID,
-    contractAddress:      cfg.POOL_ADDRESS,
-    abiFunctionSignature: POOL_ABI_FINALIZE,
-    abiParameters:        [t.chain_tid!, placementAddrs],
-    idempotencyKey:       uuidV5(`tournament:finalize:${tournamentId}`),
-    feeLevel:             "HIGH",
-  });
+  // Prizes are real money: the cup is only done once the payout is confirmed onchain.
+  // A failed transaction cannot be retried under its old key, so each attempt gets
+  // its own. A second finalize cannot pay twice; the contract refuses it.
+  let paid = false;
+  for (let attempt = 0; attempt < 3 && !paid; attempt++) {
+    const tx = await createContractExecution({
+      walletId:             cfg.REFEREE_WALLET_ID,
+      contractAddress:      cfg.POOL_ADDRESS,
+      abiFunctionSignature: POOL_ABI_FINALIZE,
+      abiParameters:        [t.chain_tid!, placementAddrs],
+      idempotencyKey:       uuidV5(`tournament:finalize:${tournamentId}:${attempt}`),
+      feeLevel:             "HIGH",
+    });
+    const done = await pollTx(tx.id, 60_000);
+    paid = done.state === "COMPLETE";
+    if (!paid) console.error(`[tournament] ${tournamentId} finalize attempt ${attempt} ended ${done.state}`);
+  }
+  if (!paid) throw new Error(`tournament ${tournamentId}: finalize failed after 3 attempts`);
 
   await sql`
     UPDATE tournaments SET status='done'

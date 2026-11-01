@@ -1,0 +1,17 @@
+# TLS is automatic (Let's Encrypt) once DNS for API_DOMAIN points at this host.
+
+{$API_DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	# reverse_proxy upgrades WebSocket requests (/ws, /v1/agent) on its own.
+	reverse_proxy server:3001 {
+		health_uri /health
+		health_interval 15s
+		flush_interval -1
+	}
+}

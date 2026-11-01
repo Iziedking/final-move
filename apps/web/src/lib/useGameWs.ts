@@ -37,8 +37,8 @@ export function useGameWs(gameId: string, token: string | null): GameWsState {
     if (deadRef.current || !token) return;
     // NEXT_PUBLIC_WS_URL: explicit WebSocket base (e.g. wss://api.finalmove.io)
     //   — used in the separate-origin deploy (API behind its own domain/port).
-    // When absent, fall back to same-origin /ws so a reverse proxy or the
-    //   sandbox proxy.mjs can handle the upgrade transparently.
+    // When absent, fall back to same-origin /ws so a reverse proxy can
+    //   handle the upgrade transparently.
     const explicitWsUrl = process.env.NEXT_PUBLIC_WS_URL;
     const url = explicitWsUrl
       ? `${explicitWsUrl}/ws`

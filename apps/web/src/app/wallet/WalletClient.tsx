@@ -1,6 +1,6 @@
 "use client";
 /**
- * The player's own Arc wallet: balance, address and stake history. The wallet
+ * The player's own Arc wallet: balance, address and, on testnet, stake history. The wallet
  * is created for every signed-in player and signs each of their moves, so
  * there are never signing popups. Gas is topped up by the house.
  */
@@ -9,6 +9,7 @@ import Link from "next/link";
 import type React from "react";
 import { useEffect, useState } from "react";
 import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
+import { ARC_EXPLORER, IS_MAINNET, STAKES_ENABLED } from "@/lib/network";
 
 interface Deposit {
   stakeOfferId: string;
@@ -25,7 +26,7 @@ interface WalletData {
   deposits:       Deposit[];
 }
 
-const EXPLORER = "https://explorer.testnet.arc.io";
+const EXPLORER = ARC_EXPLORER;
 
 function Coin({ size = 44 }: { size?: number }) {
   return (
@@ -132,14 +133,18 @@ export default function WalletClient({ userId }: { userId: string }): React.JSX.
         </section>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+      <div className={`grid grid-cols-1 gap-6 ${STAKES_ENABLED ? "md:grid-cols-2" : ""}`}>
         {/* Gas and funding */}
         <section className="sticker-card flex flex-col gap-3 p-6" aria-labelledby="gas">
           <h2 id="gas" className="font-display text-[22px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Who pays for moves</h2>
           <p className="text-[15px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
             Each move is a small Arc transaction, and Arc charges gas in USDC. The house tops up your wallet with enough gas to play, so you never need to fund it to play rated games.
           </p>
-          {data.isTestnet && (
+          {IS_MAINNET ? (
+            <p className="text-[15px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
+              This is Arc mainnet, so gas is paid in real USDC. You only need it for gas, and the house covers that. There are no stakes or entry fees on mainnet.
+            </p>
+          ) : data.isTestnet && (
             <>
               <p className="text-[15px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
                 Want test USDC for staked games? Copy your address, open the Circle faucet, choose Arc testnet and paste it.
@@ -151,8 +156,8 @@ export default function WalletClient({ userId }: { userId: string }): React.JSX.
           )}
         </section>
 
-        {/* Stake history */}
-        <section className="sticker-card flex flex-col gap-3 p-6" aria-labelledby="stakes">
+        {/* Stake history (testnet only: mainnet has no stakes) */}
+        {STAKES_ENABLED && <section className="sticker-card flex flex-col gap-3 p-6" aria-labelledby="stakes">
           <h2 id="stakes" className="font-display text-[22px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Stake history</h2>
           {data.deposits.length === 0 ? (
             <p className="text-[15px] font-semibold" style={{ color: "rgb(var(--ink-2))" }}>No staked games yet. Deposits you make for staked games show up here.</p>
@@ -176,7 +181,7 @@ export default function WalletClient({ userId }: { userId: string }): React.JSX.
               })}
             </ul>
           )}
-        </section>
+        </section>}
       </div>
     </>
   );

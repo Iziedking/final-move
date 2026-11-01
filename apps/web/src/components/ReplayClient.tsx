@@ -15,8 +15,7 @@ import { BotAvatar } from "@/components/BotAvatar";
 import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
 import { botName } from "@/lib/bots";
 import type { ChainRailEntry } from "@/lib/types";
-
-const ARC_EXPLORER = process.env.NEXT_PUBLIC_ARC_EXPLORER ?? "https://explorer.testnet.arc.io";
+import { ARC_EXPLORER } from "@/lib/network";
 
 interface MoveRow {
   ply: number; uci: string; san: string | null; fenAfter: string;

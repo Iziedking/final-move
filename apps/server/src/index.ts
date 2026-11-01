@@ -5,7 +5,7 @@
  *   /ws        — browser clients (game UI)
  *   /v1/agent  — agent API (Stage 5)
  */
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -70,14 +70,15 @@ const app = new Hono();
 // ── CORS — exact allowlist (no substring match) ───────────────────────────────
 // SECURITY: origin.includes("localhost") previously matched "localhost.evil.com".
 // Now only exact matches are allowed.
+// Local origins are allowed only outside production.
 const allowedOrigins = new Set<string>(
   [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:5173",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:3001",
-    "http://127.0.0.1:5173",
+    ...(cfg.NODE_ENV === "production" ? [] : [
+      "http://localhost:3000",
+      "http://localhost:3001",
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1:3001",
+    ]),
     cfg.PUBLIC_WEB_URL,
   ].filter(Boolean),
 );
@@ -193,6 +194,19 @@ app.get("/v1/games/:id", (c) => {
 });
 
 /** POST /v1/games — create a game vs a house bot */
+/**
+ * Guest games cost real gas on mainnet (the referee and the bot pay it), and a
+ * guest token is free to mint. Cap guest games per UTC day across all guests.
+ * Returns true when this guest game may start.
+ */
+async function takeGuestGameSlot(callerType: string): Promise<boolean> {
+  if (callerType !== "guest" || cfg.MAX_GUEST_GAMES_PER_DAY <= 0) return true;
+  const key = `guest_games:${new Date().toISOString().slice(0, 10)}`;
+  const n = await redis.incr(key);
+  if (n === 1) await redis.expire(key, 2 * 86_400);
+  return n <= cfg.MAX_GUEST_GAMES_PER_DAY;
+}
+
 app.post("/v1/games", async (c) => {
   // Identity from token (guest token is ok — playerId derived from it)
   const caller = requirePlayer(c); if (!caller) return c.res;
@@ -211,6 +225,7 @@ app.post("/v1/games", async (c) => {
   const bot = getBot(body.opponentId);
   if (!bot) return c.json({ error: "bot_not_found" }, 400);
   if (!bot.walletId || !bot.address) return c.json({ error: "bot_not_ready" }, 503);
+  if (!(await takeGuestGameSlot(caller.type))) return c.json({ error: "guest_limit_reached" }, 429);
 
   // Parse time control
   const tcParts = body.timeControl.split("+");
@@ -541,6 +556,7 @@ app.post("/v1/games/:id/rematch", async (c) => {
   const orig = origRow[0];
   if (body.playerId !== orig.white_id && body.playerId !== orig.black_id)
     return c.json({ error: "not_a_player" }, 403);
+  if (!(await takeGuestGameSlot(caller.type))) return c.json({ error: "guest_limit_reached" }, 429);
   // House bots always accept, so a rematch against a bot starts at once.
   const opponentIsBot = (body.playerId === orig.white_id ? orig.black_kind : orig.white_kind) === "bot";
 
@@ -791,6 +807,14 @@ app.post("/v1/agent/queue", async (c) => {
 
 // ── Stakes API ─────────────────────────────────────────────────────────────────
 
+// Mainnet contracts are deployed with stakes switched off; refuse every stakes route there.
+const stakesOffOnMainnet: MiddlewareHandler = async (c, next) => {
+  if (cfg.NETWORK === "mainnet") return c.json({ error: "stakes_disabled" }, 403);
+  await next();
+};
+app.use("/v1/stakes", stakesOffOnMainnet);
+app.use("/v1/stakes/*", stakesOffOnMainnet);
+
 /** POST /v1/stakes — create a stake offer before game creation */
 app.post("/v1/stakes", async (c) => {
   // Offers bind two players' wallets to an amount, so only the server side may create them.
@@ -995,7 +1019,10 @@ app.post("/v1/tournaments", async (c) => {
     startsAt:    string;   // ISO8601
     prizeUsdc6?: number;   // prize pool (sponsor funds it)
     sponsoredBy?: string;
+    entryFeeUsdc6?: number; // not supported: cups are free to enter
   };
+  if (Number(body.entryFeeUsdc6 ?? 0) > 0)
+    return c.json({ error: cfg.NETWORK === "mainnet" ? "entry_fees_disabled" : "entry_fees_not_supported" }, 403);
   try {
     const t = await createTournament({
       name:        body.name,
@@ -2004,18 +2031,21 @@ async function main() {
     if (game.blackKind === "bot") scheduleBot(game.id, game.blackId, "b");
   }
 
-  // Initialize indexer head to near chain tip if not already set
+  // Indexer head. Postgres (indexer_head) is the source of truth: a lost Redis
+  // key must never move the head, or blocks would be skipped. Only a brand-new
+  // testnet database fast-forwards to near the tip; mainnet starts at DEPLOY_BLOCK.
   {
-    const { createPublicClient, http } = await import("viem");
-    const rpc = createPublicClient({ transport: http(cfg.ARC_RPC_URL) });
-    const head = await rpc.getBlockNumber().catch(() => 0n);
-    const stored = await redis.get("indexer:head");
-    if (!stored && head > 0n) {
-      // Also persist to Postgres so it survives Redis flush
-      await sql`INSERT INTO indexer_state (key, value) VALUES ('indexer_head', ${String(head - 50n)})
-                ON CONFLICT (key) DO UPDATE SET value=${String(head - 50n)}`;
-      await redis.set("indexer:head", String(head - 50n));
-      console.log(`[server] indexer head initialized to ${head - 50n}`);
+    const dbHead = await sql<{ head: string }[]>`SELECT head FROM indexer_head WHERE id=1`.catch(() => []);
+    if (dbHead[0]) {
+      await redis.set("indexer:head", dbHead[0].head);
+    } else if (cfg.NETWORK === "testnet" && !(await redis.get("indexer:head"))) {
+      const { createPublicClient, http } = await import("viem");
+      const rpc = createPublicClient({ transport: http(cfg.ARC_RPC_URL) });
+      const head = await rpc.getBlockNumber().catch(() => 0n);
+      if (head > 0n) {
+        await redis.set("indexer:head", String(head - 50n));
+        console.log(`[server] indexer head initialized to ${head - 50n}`);
+      }
     }
   }
 

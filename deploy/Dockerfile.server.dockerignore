@@ -1,0 +1,14 @@
+# Build context is the repository root; send only what the server image needs.
+**/node_modules
+**/.next
+**/.env
+**/.env.*
+.git
+vendor
+docs
+deploy
+packages/contracts
+apps/web/*
+!apps/web/package.json
+packages/ui/*
+!packages/ui/package.json

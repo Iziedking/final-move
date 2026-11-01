@@ -16,8 +16,8 @@
  *    WebSocket opens wss://api.finalmove.io/ws.
  *    The API server must send CORS headers that include the web origin.
  *
- * The sandbox proxy.mjs implements topology 1 on port 5173 — neither env var is
- * set and everything routes through the proxy.
+ * In local development Next.js rewrites /v1, /ws, /mcp and /health to
+ * API_ORIGIN (see next.config.ts), which gives topology 1 without a proxy.
  */
 
 /** HTTP base for all /v1/* fetch calls from browser client components. */

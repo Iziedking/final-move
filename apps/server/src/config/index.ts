@@ -5,7 +5,7 @@ const Env = z.object({
   PORT:                  z.coerce.number().default(3001),
   NETWORK:               z.enum(["testnet", "mainnet"]).default("testnet"),
   ARC_RPC_URL:           z.string().url(),
-  ARC_WS_URL:            z.string(),
+  ARC_WS_URL:            z.string().default(""),     // unused; mainnet WebSocket is provider-only
   ARC_EXPLORER:          z.string().url(),
   CIRCLE_CHAIN:          z.string(),
   USDC_ADDRESS:          z.string(),
@@ -31,6 +31,9 @@ const Env = z.object({
   PUBLIC_WEB_URL:        z.string().default("http://localhost:3000"),
   // Comma-separated list of bot wallet IDs (set after create-bot-wallets runs)
   BOT_WALLET_IDS:        z.string().default(""),
+  // Guest games per UTC day across all guests (0 = unlimited). Guests cost real
+  // gas on mainnet, so the default there is 50; testnet is unlimited.
+  MAX_GUEST_GAMES_PER_DAY: z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().int().min(0).optional()),
 });
 
 function loadEnv() {
@@ -39,7 +42,30 @@ function loadEnv() {
     console.error("❌  Invalid environment:\n", result.error.flatten().fieldErrors);
     process.exit(1);
   }
-  return result.data;
+  const env = result.data;
+  // Mainnet must point at mainnet everywhere; a mixed setup would sign real
+  // transactions against the wrong chain or contracts.
+  if (env.NETWORK === "mainnet") {
+    const problems: string[] = [];
+    if (env.CIRCLE_CHAIN !== "ARC") problems.push(`CIRCLE_CHAIN must be "ARC" on mainnet (got "${env.CIRCLE_CHAIN}")`);
+    if (/testnet/i.test(env.ARC_RPC_URL)) problems.push("ARC_RPC_URL points at testnet");
+    if (/testnet/i.test(env.ARC_EXPLORER)) problems.push("ARC_EXPLORER points at testnet");
+    for (const k of ["LEDGER_ADDRESS", "ESCROW_ADDRESS", "POOL_ADDRESS"] as const) {
+      if (/^0x0{40}$/i.test(env[k])) problems.push(`${k} is the zero address`);
+    }
+    if (env.DEPLOY_BLOCK <= 0n) problems.push("DEPLOY_BLOCK must be the mainnet deploy block");
+    if (env.ADMIN_TOKEN.length < 32) problems.push("ADMIN_TOKEN must be set (32+ chars)");
+    if (env.INTERNAL_SECRET.length < 32) problems.push("INTERNAL_SECRET must be set (32+ chars)");
+    if (env.SESSION_SECRET.startsWith("dev-session-secret")) problems.push("SESSION_SECRET must be set");
+    if (problems.length) {
+      console.error("❌  Mainnet configuration refused:\n - " + problems.join("\n - "));
+      process.exit(1);
+    }
+  }
+  return {
+    ...env,
+    MAX_GUEST_GAMES_PER_DAY: env.MAX_GUEST_GAMES_PER_DAY ?? (env.NETWORK === "mainnet" ? 50 : 0),
+  };
 }
 
 export const cfg = loadEnv();

@@ -2,6 +2,7 @@ import Link from "next/link";
 import type React from "react";
 import type { Metadata } from "next";
 import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
+import { IS_MAINNET } from "@/lib/network";
 
 export const metadata: Metadata = { title: "About and fair play" };
 
@@ -53,7 +54,9 @@ export default function AboutPage(): React.JSX.Element {
               "Every legal move, sent from the mover's own Circle wallet as the game, the ply number and the move.",
               "The start and the end of every game: players, result and reason.",
               "Resignations, draw offers and draw acceptance.",
-              "Cup registration and prize payouts, and escrow deposits and settlements for staked games.",
+              IS_MAINNET
+                ? "Cup registration and prize payouts from the cup's prize pool contract."
+                : "Cup registration and prize payouts, and escrow deposits and settlements for staked games.",
             ]} />
             <p className={P} style={{ color: "rgb(var(--ink-2))" }}>
               The ply number sets the order of the game, not the order transactions land, so the record is correct even when moves confirm out of order.
@@ -75,13 +78,13 @@ export default function AboutPage(): React.JSX.Element {
             <div className="rounded-[var(--r)] p-4" style={{ background: "rgb(var(--violet-light))", border: "2px solid rgb(var(--ink))" }}>
               <p className="font-display text-[20px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Open class</p>
               <p className={`${P} mt-1`} style={{ color: "rgb(var(--ink-2))" }}>
-                People, agents and people helped by engines. Anything goes. Stakes (testnet only for now), the Saturday Cup and the Open rating live here. Nobody can prove an online opponent is not using an engine, so the class where money moves assumes they might be.
+                People, agents and people helped by engines. Anything goes. {IS_MAINNET ? "The Saturday Cup" : "Stakes (testnet only), the Saturday Cup"} and the Open rating live here. Nobody can prove an online opponent is not using an engine, so the class where money moves assumes they might be.
               </p>
             </div>
             <div className="rounded-[var(--r)] p-4" style={{ background: "rgb(var(--mint) / 0.25)", border: "2px solid rgb(var(--ink))" }}>
               <p className="font-display text-[20px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Human class</p>
               <p className={`${P} mt-1`} style={{ color: "rgb(var(--ink-2))" }}>
-                People only, playing unassisted. Agents cannot join and there are never stakes. Games get fair-play checks that can flag them for a person to review.
+                People only, playing unassisted. Agents cannot join and there are never stakes or prizes. Games get fair-play checks that can flag them for a person to review.
               </p>
             </div>
           </div>
@@ -93,7 +96,7 @@ export default function AboutPage(): React.JSX.Element {
               "Win by checkmate, resignation, the opponent's flag falling, or the opponent abandoning.",
               "Draw by stalemate, threefold repetition, the fifty-move rule, insufficient material or agreement. A flag fall against a side that cannot mate is a draw too.",
               "Abandon: no move within 60 seconds of the clock starting, or disconnected for 60 seconds while on move.",
-              "Aborted: a player never makes a first move within 30 seconds. No rating change, and any stakes are refunded.",
+              `Aborted: a player never makes a first move within 30 seconds. No rating change${IS_MAINNET ? "" : ", and any stakes are refunded"}.`,
             ]} />
             <p className={P} style={{ color: "rgb(var(--ink-2))" }}>
               Ratings use TrueSkill, one per class and time control. The leaderboard ranks by a conservative rating, so a few lucky wins do not top the board.
@@ -112,11 +115,15 @@ export default function AboutPage(): React.JSX.Element {
 
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <Section id="money" title="Money, carefully" tone="--amber">
-            <Points items={[
+            <Points items={IS_MAINNET ? [
+              "This is Arc mainnet. Play is free and rated. There are no stakes and no entry fees, and the mainnet contracts were deployed with stakes switched off for good.",
+              "Saturday Cup prizes are real USDC put into the cup's prize pool contract by a sponsor or the operator before the cup starts.",
+              "Prizes are paid by the contract straight to the winners' wallets when the cup is finalized. If a cup is never finalized, anyone can trigger a refund to the sponsors seven days after registration closes.",
+            ] : [
               "Stakes run on Arc testnet only. Test USDC has no value.",
               "In a staked game both players lock the same amount in escrow before the first move. The winner takes both; a draw or abort refunds both.",
               "If a staked match is not settled 24 hours after it starts, either player can claim a refund. The operator disappearing never traps money.",
-              "Mainnet launches with free play and sponsored cup prizes only, with no entry fees. Mainnet stakes stay off.",
+              "Mainnet runs free play and sponsored cup prizes only, with no entry fees. Mainnet stakes stay off.",
             ]} />
           </Section>
 

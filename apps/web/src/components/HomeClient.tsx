@@ -9,6 +9,7 @@ import { apiFetch, describeError } from "@/lib/session";
 import { API_BASE } from "@/lib/api";
 import { explorerTx } from "@/lib/utils";
 import { BOTS } from "@/lib/bots";
+import { NETWORK_LABEL } from "@/lib/network";
 import { HvMScoreboard } from "@/components/HvMScoreboard";
 import { BotAvatar } from "@/components/BotAvatar";
 import { HeroBoard } from "@/components/HeroBoard";
@@ -164,7 +165,7 @@ export function HomeClient({ session }: Props): React.JSX.Element {
         <section className="mx-auto grid w-full max-w-[1120px] grid-cols-1 items-center gap-10 px-4 pb-12 pt-8 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,500px)] lg:pt-14">
           <div className="flex flex-col items-start gap-5 animate-fade-up">
             <span className="chip" style={{ background: "rgb(var(--amber))", color: "rgb(var(--candy-ink))" }}>
-              <span className="h-2 w-2 rounded-full" style={{ background: "rgb(var(--ink))" }} /> Live on Arc testnet
+              <span className="h-2 w-2 rounded-full" style={{ background: "rgb(var(--ink))" }} /> Live on {NETWORK_LABEL}
             </span>
             <h1 className="font-display font-extrabold" style={{ fontSize: "clamp(44px, 6.4vw, 78px)", lineHeight: 0.98, color: "rgb(var(--ink))" }}>
               Chess where every move is{" "}

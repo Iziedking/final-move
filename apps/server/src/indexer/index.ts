@@ -22,13 +22,7 @@ const LIVE_BATCH      =   200n;
 const CATCH_UP_GAP    = 5_000n;
 const POLL_MS         = 4_000;
 
-// Use RPC proxy if available, fall back to public RPC.
-const proxyChains = (process.env.RPC_PROXY_CHAINS ?? "").split(",").map((s) => s.trim());
-const rpcUrl = process.env.RPC_PROXY_BASE_URL && proxyChains.includes("Arc_Testnet")
-  ? `${process.env.RPC_PROXY_BASE_URL}/api/rpc/Arc_Testnet?_rpc_token=${process.env.RPC_PROXY_TOKEN}`
-  : cfg.ARC_RPC_URL;
-
-const client = createPublicClient({ transport: http(rpcUrl) });
+const client = createPublicClient({ transport: http(cfg.ARC_RPC_URL) });
 
 // ── Lag tracking ──────────────────────────────────────────────────────────────
 

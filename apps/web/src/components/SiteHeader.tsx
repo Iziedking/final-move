@@ -11,6 +11,7 @@ import { usePathname } from "next/navigation";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { King } from "@/components/ChessPieces";
+import { NETWORK_LABEL } from "@/lib/network";
 
 const NAV = [
   { href: "/", label: "Play" },
@@ -131,7 +132,7 @@ export function SiteFooter(): React.JSX.Element {
   return (
     <footer className="mx-auto mt-auto w-full max-w-[1120px] px-4 pb-8 pt-12 sm:px-6">
       <div className="flex flex-col items-start justify-between gap-3 border-t-2 pt-5 text-[13px] font-bold sm:flex-row sm:items-center" style={{ borderColor: "rgb(var(--ink) / 0.12)", color: "rgb(var(--ink-3))" }}>
-        <span>Final Move runs on Arc testnet. Moves cost gas in USDC, paid by the house.</span>
+        <span>Final Move runs on {NETWORK_LABEL}. Moves cost gas in USDC, paid by the house.</span>
         <span className="flex gap-4">
           <Link href="/about" className="hover:underline">About and fair play</Link>
           <Link href="/leaderboard" className="hover:underline">Leaderboard</Link>

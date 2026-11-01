@@ -203,12 +203,13 @@ export async function rehydrateLiveGames(): Promise<void> {
   // Reload indexer head from Postgres if Redis has no value
   const headInRedis = await redis.get("indexer:head");
   if (!headInRedis) {
-    const rows2 = await sql<{ value: string }[]>`
-      SELECT value FROM indexer_state WHERE key='indexer_head' LIMIT 1
-    `;
+    // indexer_head is the table the indexer itself advances (indexer_state is legacy).
+    const rows2 = await sql<{ head: string }[]>`
+      SELECT head FROM indexer_head WHERE id=1
+    `.catch(() => []);
     if (rows2[0]) {
-      await redis.set("indexer:head", rows2[0].value);
-      console.log(`[rehydrate] restored indexer head from Postgres: ${rows2[0].value}`);
+      await redis.set("indexer:head", rows2[0].head);
+      console.log(`[rehydrate] restored indexer head from Postgres: ${rows2[0].head}`);
     }
   }
 }

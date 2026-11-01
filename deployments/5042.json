@@ -1,0 +1,48 @@
+{
+  "chainId": 5042,
+  "chainName": "Arc Mainnet",
+  "network": "mainnet",
+  "deployedAt": "",
+  "stakesEnabled": false,
+  "contracts": {
+    "FinalMoveLedger": {
+      "address": "",
+      "txHash": "",
+      "deployBlock": 0,
+      "explorer": "https://explorer.arc.io/address/",
+      "constructorArgs": {
+        "owner": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
+        "referee": ""
+      }
+    },
+    "MatchEscrow": {
+      "address": "",
+      "txHash": "",
+      "deployBlock": 0,
+      "explorer": "https://explorer.arc.io/address/",
+      "constructorArgs": {
+        "usdc": "0x3600000000000000000000000000000000000000",
+        "ledger": "",
+        "stakesEnabled": false,
+        "owner": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
+        "referee": ""
+      }
+    },
+    "TournamentPool": {
+      "address": "",
+      "txHash": "",
+      "deployBlock": 0,
+      "explorer": "https://explorer.arc.io/address/",
+      "constructorArgs": {
+        "usdc": "0x3600000000000000000000000000000000000000",
+        "stakesEnabled": false,
+        "owner": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
+        "referee": ""
+      }
+    }
+  },
+  "wallets": {
+    "referee": { "walletId": "", "address": "" },
+    "treasury": { "walletId": "", "address": "" }
+  }
+}

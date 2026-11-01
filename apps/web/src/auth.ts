@@ -91,6 +91,8 @@ const result: NextAuthResult = NextAuth({
     signIn: "/",
   },
   secret: authSecret,
+  // The app runs behind a TLS proxy or a hosting platform; trust its Host header.
+  trustHost: true,
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -101,6 +101,8 @@ export function describeError(code: string | undefined): string {
     case "not_found": return "That game or link no longer exists.";
     case "own_challenge": return "This is your own challenge link. Send it to a friend.";
     case "unauthorized": return "Your session expired. Reload the page and try again.";
+    case "guest_limit_reached": return "Today's free guest games are used up. Sign in with X to keep playing, or come back tomorrow.";
+    case "stakes_disabled": return "Stakes are switched off on Arc mainnet. Play is free.";
     default: return "Something went wrong. Try again.";
   }
 }
