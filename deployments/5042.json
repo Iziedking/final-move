@@ -1,48 +1,27 @@
 {
   "chainId": 5042,
-  "chainName": "Arc Mainnet",
-  "network": "mainnet",
-  "deployedAt": "",
+  "network": "arc-mainnet",
+  "deployedAt": "2026-11-01",
   "stakesEnabled": false,
+  "owner": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
+  "referee": "0x34fb5f2cfab893a5aa941f1da4612d304f79bab3",
+  "usdc": "0x3600000000000000000000000000000000000000",
+  "deployBlock": 29018124,
   "contracts": {
     "FinalMoveLedger": {
-      "address": "",
-      "txHash": "",
-      "deployBlock": 0,
-      "explorer": "https://explorer.arc.io/address/",
-      "constructorArgs": {
-        "owner": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
-        "referee": ""
-      }
+      "address": "0x910fAcA20562cD625f9524Cb2DcA06fa0136bA1b",
+      "txHash": "0x3c11b4de48e68a60eb44c9d5857c9b1cc8e973dc2c11c19c0d4ecbdfa2e97fd7",
+      "block": 29018124
     },
     "MatchEscrow": {
-      "address": "",
-      "txHash": "",
-      "deployBlock": 0,
-      "explorer": "https://explorer.arc.io/address/",
-      "constructorArgs": {
-        "usdc": "0x3600000000000000000000000000000000000000",
-        "ledger": "",
-        "stakesEnabled": false,
-        "owner": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
-        "referee": ""
-      }
+      "address": "0xEE89669978B990D1a2E784caB0d458A9bD76f412",
+      "txHash": "0x795a0e8ae55117392bc6335de8625bb024fe6d4c17f67a45c315315cf55b3e36",
+      "block": 29018124
     },
     "TournamentPool": {
-      "address": "",
-      "txHash": "",
-      "deployBlock": 0,
-      "explorer": "https://explorer.arc.io/address/",
-      "constructorArgs": {
-        "usdc": "0x3600000000000000000000000000000000000000",
-        "stakesEnabled": false,
-        "owner": "0x489C6367E2e943A3cC017589f73cAA8A80d7D028",
-        "referee": ""
-      }
+      "address": "0x0842DE450B6ff11331b6817fF8Aa07792cC963eB",
+      "txHash": "0x694d2728436dd63714ea9df4034ac4afdd6d0a4dca7892d6fd94151e32014d48",
+      "block": 29018124
     }
-  },
-  "wallets": {
-    "referee": { "walletId": "", "address": "" },
-    "treasury": { "walletId": "", "address": "" }
   }
 }

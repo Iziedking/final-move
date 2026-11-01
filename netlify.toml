@@ -1,0 +1,29 @@
+# Netlify configuration for the Final Move Next.js web app.
+# The project is a bun workspace monorepo; apps/web is the Next.js frontend.
+# apps/server is NOT deployed here — it runs on a separate production server.
+
+[build]
+  # Install from the repo root so all workspace packages resolve correctly.
+  base    = "."
+  command = "bun install --frozen-lockfile && bun run --cwd apps/web build"
+  publish = "apps/web/.next"
+
+  [build.environment]
+    # Bun
+    BUN_VERSION = "1.3.14"
+
+    # Public runtime values — safe to commit.
+    # Secrets (AUTH_SECRET, INTERNAL_SECRET, X_CLIENT_ID, X_CLIENT_SECRET)
+    # must be added in the Netlify site UI under Site settings > Environment variables.
+    NEXT_PUBLIC_NETWORK      = "mainnet"
+    NEXT_PUBLIC_ARC_EXPLORER = "https://explorer.arc.io"
+    NEXT_PUBLIC_API_ORIGIN   = "https://api.finalmove.veilap.xyz"
+    NEXT_PUBLIC_WS_URL       = "wss://api.finalmove.veilap.xyz"
+    NEXT_PUBLIC_SITE_URL     = "https://finalmove.veilap.xyz"
+    API_ORIGIN               = "https://api.finalmove.veilap.xyz"
+    AUTH_URL                 = "https://finalmove.veilap.xyz"
+    AUTH_TRUST_HOST          = "true"
+
+# Use Netlify's Next.js runtime (Essential Next.js plugin) for SSR/ISR support.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
