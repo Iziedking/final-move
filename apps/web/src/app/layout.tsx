@@ -3,6 +3,7 @@ import { Baloo_2, Nunito, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { SessionProvider } from "@/components/SessionProvider";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { BuiltWith } from "@/components/BuiltWith";
 import type React from "react";
 
 const baloo = Baloo_2({
@@ -50,6 +51,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }):
         <ThemeProvider>
           <SessionProvider>
             {children}
+            <BuiltWith />
           </SessionProvider>
         </ThemeProvider>
       </body>
