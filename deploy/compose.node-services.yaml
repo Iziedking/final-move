@@ -1,0 +1,9 @@
+# Run the API on a host that already has Caddy on ports 80 and 443.
+# Use with compose.prod.yaml:
+#   docker compose --env-file .env -f deploy/compose.prod.yaml -f deploy/compose.node-services.yaml up -d --build
+# The API listens on localhost only; the host's Caddy proxies api.finalmove.veilap.xyz to it.
+services:
+  caddy:
+    profiles: ["own-caddy"]
+  server:
+    ports: ["127.0.0.1:3122:3001"]

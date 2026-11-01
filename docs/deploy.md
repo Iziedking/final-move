@@ -65,6 +65,25 @@ curl -s https://api.finalmove.veilap.xyz/health
 
 Migrations run when the server starts. Caddy fetches the TLS certificate on the first request once DNS resolves.
 
+### On a host that already runs Caddy
+
+node-services already has Caddy on ports 80 and 443, so skip the bundled one. Use `deploy/compose.node-services.yaml`, which publishes the API on `127.0.0.1:3122` only:
+
+```sh
+docker compose --env-file .env -f deploy/compose.prod.yaml -f deploy/compose.node-services.yaml up -d --build
+```
+
+Back up `/etc/caddy/Caddyfile`, add this block, run `caddy validate`, then reload:
+
+```
+api.finalmove.veilap.xyz {
+	encode gzip
+	reverse_proxy 127.0.0.1:3122 {
+		flush_interval -1
+	}
+}
+```
+
 ### API `.env` for mainnet
 
 | Key | Value |
