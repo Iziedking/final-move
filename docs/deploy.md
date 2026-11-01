@@ -3,7 +3,7 @@
 Production runs in two parts:
 
 - **API host:** one Linux machine (EC2 or any VPS) running the API server, Postgres, Redis and Caddy for TLS, from `deploy/compose.prod.yaml`. Example domain: `api.finalmove.veilap.xyz`.
-- **Web app:** the Next.js app in `apps/web` on a hosting platform (Vercel, Netlify or Arc Studio's publish), calling the API on its own origin.
+- **Web app:** the Next.js app in `apps/web` on a hosting platform (Netlify or Vercel, connected from the Integrations menu in the Arc Studio workspace), calling the API on its own origin.
 
 Steps marked **owner** move real money or touch credentials. Only the owner does them.
 
