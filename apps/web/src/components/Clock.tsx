@@ -14,6 +14,8 @@ interface ClockProps {
   /** Smaller variant for compact layouts. */
   compact?: boolean;
   label?: string;
+  /** Called once when this clock drops under 20 s. Pass it for the player's own clock only. */
+  onLowTime?: () => void;
 }
 
 function fmt(ms: number): string {
@@ -26,7 +28,7 @@ function fmt(ms: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function Clock({ ms, running, compact = false, label }: ClockProps): React.JSX.Element {
+export function Clock({ ms, running, compact = false, label, onLowTime }: ClockProps): React.JSX.Element {
   const since = useRef(performance.now());
   const [now, setNow] = useState(() => performance.now());
 
@@ -41,6 +43,14 @@ export function Clock({ ms, running, compact = false, label }: ClockProps): Reac
 
   const shown = running ? ms - (now - since.current) : ms;
   const low = shown < 20_000;
+
+  // Warn once per dip. Increments can hover a clock around 20 s, so it only re-arms well above that.
+  const warned = useRef(false);
+  useEffect(() => {
+    if (shown >= 25_000) warned.current = false;
+    if (running && low && shown > 0 && !warned.current) { warned.current = true; onLowTime?.(); }
+  }, [running, low, shown, onLowTime]);
+
   const bg = running ? (low ? "rgb(var(--coral))" : "rgb(var(--mint))") : "rgb(var(--cloud))";
   const fg = running && low ? "#fff" : "rgb(var(--candy-ink))";
 

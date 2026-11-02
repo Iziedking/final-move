@@ -50,6 +50,8 @@ interface PlayBoardProps {
   lastUci?: string;
   flipped?: boolean;
   onMove: (uci: string) => void;
+  /** A piece was dragged to a square it can't move to. */
+  onIllegal?: () => void;
   disabled?: boolean;
   /** Chain state of the last move, for the on-board mark. */
   lastMoveState?: ChainRailEntry["state"];
@@ -71,6 +73,7 @@ export function PlayBoard({
   lastUci,
   flipped: flippedProp = false,
   onMove,
+  onIllegal,
   disabled = false,
   lastMoveState,
 }: PlayBoardProps): React.JSX.Element {
@@ -162,7 +165,10 @@ export function PlayBoard({
     const d = drag;
     setDrag(null);
     if (!d.moved) { handleSquare(d.idx); return; } // a tap, not a drag
-    if (target === null || !tryMove(d.idx, target)) setSelected(null); // spring back
+    if (target === null || !tryMove(d.idx, target)) { // spring back
+      setSelected(null);
+      if (target !== null && target !== d.idx) onIllegal?.();
+    }
   };
 
   const order = useMemo(() => {

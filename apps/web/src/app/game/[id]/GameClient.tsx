@@ -20,7 +20,7 @@ import { Clock } from "@/components/Clock";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { explorerTx } from "@/lib/utils";
 import { apiFetch, getPlayer, describeError, type Player } from "@/lib/session";
-import { sfx, isMuted, setMuted, onMutedChange } from "@/lib/sound";
+import { sfx, isMuted, setMuted, onMutedChange, preloadSounds } from "@/lib/sound";
 import type { PlayerInfo, ChainRailEntry, WsGameState } from "@/lib/types";
 
 interface Props {
@@ -437,6 +437,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => { setMutedState(isMuted()); return onMutedChange(setMutedState); }, []);
+  useEffect(() => { preloadSounds(); }, []);
 
   // Offers expire on the server after 30 s; a slow tick is enough to retire them here.
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 2_000); return () => clearInterval(t); }, []);
@@ -445,8 +446,8 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
   const line = useMemo(() => sanLine(moves ?? []), [moves]);
   const livePly = line.san.length;
 
-  // Sounds follow the record: a move or capture per ply, a start chime on the
-  // first move, and a closing sound (or a win chime) when the game ends.
+  // Sounds follow the record: a start chime when you join a fresh game, one sound per ply
+  // read from its SAN, and a closing sound that depends on how the game went for you.
   const heard = useRef<{ ply: number; ended: boolean } | null>(null);
   const status = gameState?.status;
   const result = gameState?.result;
@@ -455,17 +456,29 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
     const ended = status === "ended" || status === "aborted";
     const prev = heard.current;
     heard.current = { ply: livePly, ended };
-    if (!prev) return; // first state after joining: no catch-up noise
+    const me = gameState ? (gameState.white.id === playerId ? "w" : gameState.black.id === playerId ? "b" : null) : null;
+    if (!prev) { // first state after joining: no catch-up noise
+      if (me && livePly === 0 && !ended) sfx.start();
+      return;
+    }
     if (livePly > prev.ply) {
-      if (prev.ply === 0) sfx.start();
-      else sfx.move((line.san[livePly - 1] ?? "").includes("x"));
+      const mover = livePly % 2 === 1 ? "w" : "b";
+      sfx.move(line.san[livePly - 1] ?? "", mover === me);
     }
     if (ended && !prev.ended) {
-      const me = gameState ? (gameState.white.id === playerId ? "w" : gameState.black.id === playerId ? "b" : null) : null;
       const won = (result === "white" && me === "w") || (result === "black" && me === "b");
-      if (won) sfx.win(); else sfx.end();
+      const lost = (result === "white" && me === "b") || (result === "black" && me === "w");
+      if (won) sfx.win(); else if (lost) sfx.lose(); else sfx.draw();
     }
   }, [livePly, status, result, line, gameState, playerId]);
+
+  // A draw or rematch offer from the other side should be heard, since it expires.
+  useEffect(() => {
+    if (drawOffer && drawOffer.by !== playerId) sfx.notify();
+  }, [drawOffer, playerId]);
+  useEffect(() => {
+    if (rematchOfferedBy && rematchOfferedBy !== playerId) sfx.notify();
+  }, [rematchOfferedBy, playerId]);
 
   // Leave review mode when a new move lands only if the reviewer was on the live ply.
   useEffect(() => { setReviewPly((r) => (r !== null && r >= livePly ? null : r)); }, [livePly]);
@@ -612,7 +625,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
         <section className="mx-auto flex w-full max-w-[600px] flex-col gap-3" aria-label="Board">
           <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1"><PlayerBar player={top} active={runs(top)} isMe={top.color === myColor} lead={leadOf(top)} /></div>
-            <Clock ms={clockOf(top)} running={runs(top)} label={`${top.handle} clock`} />
+            <Clock ms={clockOf(top)} running={runs(top)} label={`${top.handle} clock`} onLowTime={top.color === myColor ? sfx.lowTime : undefined} />
           </div>
 
           <div className="relative">
@@ -624,6 +637,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
               lastUci={lastUci}
               flipped={manualFlip}
               onMove={sendMove}
+              onIllegal={sfx.illegal}
               disabled={!iAmOnMove || reviewing}
               lastMoveState={lastMoveState}
             />
@@ -647,7 +661,7 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
 
           <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1"><PlayerBar player={bottom} active={runs(bottom)} isMe={bottom.color === myColor} lead={leadOf(bottom)} /></div>
-            <Clock ms={clockOf(bottom)} running={runs(bottom)} label={`${bottom.handle} clock`} />
+            <Clock ms={clockOf(bottom)} running={runs(bottom)} label={`${bottom.handle} clock`} onLowTime={bottom.color === myColor ? sfx.lowTime : undefined} />
           </div>
 
           {/* Status and actions */}
