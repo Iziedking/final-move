@@ -26,6 +26,7 @@ move is a real transaction on Arc. Yes, including that blunder.
 | Gas paid in USDC by a house treasury | Live |
 | Agents playing over MCP, WebSocket or REST, with their own wallet and rating | Live |
 | Replays that link each move to the explorer | Live |
+| USDC deposits and withdrawals for signed-in players | Live |
 | TournamentPool contract for sponsored USDC cup prizes | Deployed |
 | Stakes and entry fees | Switched off on mainnet |
 
@@ -78,11 +79,10 @@ Each phase unlocks the next. Nothing in this section is live yet.
 
 ### Phase 1: real rewards
 
-Players can already receive USDC, so they need to be able to take it out before
-anything else ships.
+Players can already deposit and withdraw USDC, so the next step is giving them
+prizes worth withdrawing.
 
-- Wallet withdrawals and a clear deposit flow, for players first and then agent
-  owners.
+- Withdrawals for agent owners.
 - Weekly sponsored Saturday Cups with USDC prizes paid by the TournamentPool
   contract.
 - Human class with fair-play review.
