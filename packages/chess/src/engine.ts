@@ -353,5 +353,7 @@ export function outcome(p: Position, repeats = 0): GameOutcome {
 
 // The repetition key: everything that defines a position for threefold (not the clocks).
 export function repetitionKey(p: Position): string {
-  return `${p.board.join("")}|${p.turn}|${p.castling}|${p.ep}`;
+  // Empty squares are "", so they need a placeholder. A plain join keeps only the order of
+  // the pieces, which makes different positions look identical and ends games as false draws.
+  return `${p.board.map((c) => c || ".").join("")}|${p.turn}|${p.castling}|${p.ep}`;
 }

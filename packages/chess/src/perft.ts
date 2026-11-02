@@ -86,6 +86,18 @@ check("self-play terminates", finalOc.over || plies >= 300 ? 1 : 0, 1);
 check("captured material in range", caps.w <= 39 && caps.b <= 39 && caps.w >= 0 && caps.b >= 0 ? 1 : 0, 1);
 console.log(`  self-play: ${plies} ply, result=${finalOc.over ? finalOc.result : "ply-cap"}, captured w:${caps.w} b:${caps.b}`);
 
+// --- repetition keys: these three positions from 1.d4 Nc6 2.d5 Ne5 3.f4 Ng6 keep the same
+// order of pieces on different squares. They once counted as a threefold and drew the game.
+const samePieceOrder = [
+  "r1bqkbnr/pppppppp/2n5/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 1 2",
+  "r1bqkbnr/pppppppp/8/3Pn3/8/8/PPP1PPPP/RNBQKBNR w KQkq - 1 3",
+  "r1bqkbnr/pppppppp/6n1/3P4/5P2/8/PPP1P1PP/RNBQKBNR w KQkq - 1 4",
+].map((fen) => repetitionKey(parseFEN(fen)));
+check("repetition: same piece order on other squares is not a repeat", new Set(samePieceOrder).size, 3);
+// After 1.Nf3 Nf6 2.Ng1 Ng8 the start position really does repeat; the move counters don't count.
+const backAtStart = repetitionKey(parseFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 4 3"));
+check("repetition: the same position still repeats", backAtStart === repetitionKey(parseFEN(START_FEN)) ? 1 : 0, 1);
+
 // --- tournament bracket: seed 8, play it out (stronger seed wins), check placements ---
 const field = Array.from({ length: 8 }, (_, i) => ({ agentId: i + 1, tier: 100 - (i + 1) }));
 let br = buildBracket(field);
