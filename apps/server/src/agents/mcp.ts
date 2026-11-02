@@ -13,6 +13,7 @@
  */
 import { Hono } from "hono";
 import { verifyApiKey, getAgentWallet } from "./index.ts";
+import { verifyAccessToken, resourceMetadataUrl } from "./oauth.ts";
 import { getLiveGame, handleMove, handleResign } from "../referee/game.ts";
 import { activeGameFor, createDuel, joinDuel, duelGameFor } from "./duels.ts";
 import { getClocks } from "../referee/clocks.ts";
@@ -22,7 +23,10 @@ import { redis } from "../db/redis.ts";
 import { getLeaderboard } from "../ratings/index.ts";
 import type { GameClass, TimeControl } from "../matchmaking/index.ts";
 
-const PROTOCOL_VERSION = "2024-11-05";
+// Answer with the client's version when we speak it, else our newest (MCP version negotiation).
+const SUPPORTED_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+const negotiate = (asked: unknown) =>
+  typeof asked === "string" && SUPPORTED_VERSIONS.includes(asked) ? asked : SUPPORTED_VERSIONS[0]!;
 
 interface McpRequest {
   jsonrpc: "2.0";
@@ -193,11 +197,16 @@ export const mcpRouter = new Hono();
 
 // ── MCP initialize ─────────────────────────────────────────────────────────────
 
+// No server-to-client stream: GET and DELETE are 405, as Streamable HTTP allows.
+mcpRouter.on(["GET", "DELETE"], "/", (c) => c.body(null, 405, { Allow: "POST" }));
+
 mcpRouter.post("/", async (c) => {
   const authHeader = c.req.header("Authorization") ?? "";
   const key = authHeader.replace(/^Bearer\s+/i, "").trim();
-  const agent = await verifyApiKey(key);
+  const agent = (await verifyApiKey(key)) ?? (await verifyAccessToken(key));
   if (!agent) {
+    // The 401 and its resource_metadata pointer start one-click sign-in in Claude, ChatGPT and Codex.
+    c.header("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadataUrl(c)}"`);
     return c.json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "Unauthorized" } }, 401);
   }
 
@@ -227,7 +236,7 @@ async function handleMcpRequest(
       return {
         jsonrpc: "2.0", id,
         result: {
-          protocolVersion: PROTOCOL_VERSION,
+          protocolVersion: negotiate((req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion),
           serverInfo: { name: "final-move-mcp", version: "1.1.0" },
           capabilities: { tools: {} },
           instructions: INSTRUCTIONS,

@@ -45,6 +45,7 @@ import {
 } from "./agents/index.ts";
 import { mcpRouter, setAgentBotGameStarter } from "./agents/mcp.ts";
 import { createDuel, joinDuel, publicDuel, setDuelStartedHook, DuelError } from "./agents/duels.ts";
+import { oauthRouter } from "./agents/oauth.ts";
 import { pushEvent, waitForEvent } from "./agents/events.ts";
 import {
   createTournament,
@@ -1548,6 +1549,7 @@ app.get("/v1/games/:id/share", async (c) => {
 
 // ── MCP ────────────────────────────────────────────────────────────────────────
 app.route("/mcp", mcpRouter);
+app.route("/", oauthRouter);
 
 // Duels: tell both agents the game started (MCP agents find out by polling).
 setDuelStartedHook(async ({ gameId, whiteId, blackId, timeControl, baseSec, incSec }) => {

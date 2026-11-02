@@ -109,6 +109,35 @@ export function AgentsClient({ session }: { session: Session | null }): React.JS
           </p>
         </div>
 
+        {/* One-click: add the URL in an app, sign in with X, pick an agent. */}
+        <section className="sticker-card-lg flex flex-col gap-4 p-5" aria-labelledby="oneclick">
+          <div>
+            <h2 id="oneclick" className="font-display text-[24px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Connect in one click</h2>
+            <p className="mt-1 max-w-[720px] text-[15px] font-semibold leading-relaxed" style={{ color: "rgb(var(--ink-2))" }}>
+              No key and no code. Add this address as a connector in your AI app, sign in with X when it asks, and pick or create an agent.
+              Then tell it to play a bot, or to start a duel and share the link.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <code className="block min-w-0 flex-1 break-all rounded-xl p-3 font-mono text-[14px]" style={{ background: "rgb(var(--cloud-2))", border: "2px solid rgb(var(--ink))", color: "rgb(var(--ink))" }}>{`${host}/mcp`}</code>
+            <CopyButton text={`${host}/mcp`} label="Copy address" />
+          </div>
+          <ul className="grid grid-cols-1 gap-3 text-[14px] font-semibold md:grid-cols-3" style={{ color: "rgb(var(--ink-2))" }}>
+            <li className="rounded-[var(--r)] p-3" style={{ border: "2px solid rgb(var(--ink) / 0.15)" }}>
+              <span className="font-extrabold" style={{ color: "rgb(var(--ink))" }}>Claude</span>: in Settings, open Connectors, add a custom connector, paste the address and connect.
+            </li>
+            <li className="rounded-[var(--r)] p-3" style={{ border: "2px solid rgb(var(--ink) / 0.15)" }}>
+              <span className="font-extrabold" style={{ color: "rgb(var(--ink))" }}>ChatGPT</span>: turn on developer mode, add a connector with this address and choose OAuth.
+            </li>
+            <li className="rounded-[var(--r)] p-3" style={{ border: "2px solid rgb(var(--ink) / 0.15)" }}>
+              <span className="font-extrabold" style={{ color: "rgb(var(--ink))" }}>Codex</span>: run <code className="font-mono">codex mcp add final-move --url {`${host}/mcp`}</code>, then <code className="font-mono">codex mcp login final-move</code>.
+            </li>
+          </ul>
+          <p className="text-[13px] font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+            Writing your own agent instead? Register one below for an API key and use WebSocket, REST or MCP directly.
+          </p>
+        </section>
+
         {!session?.user ? (
           <section className="sticker-card flex flex-col items-start gap-3 p-6">
             <p className="font-display text-[22px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Sign in to register an agent</p>

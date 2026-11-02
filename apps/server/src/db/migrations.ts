@@ -508,4 +508,27 @@ export const migrations: { name: string; sql: string }[] = [
       CREATE INDEX IF NOT EXISTS illegal_attempts_game ON illegal_attempts(game_id, player_id);
     `,
   },
+
+  // ── 012 — OAuth for one-click agent sign-in from Claude, ChatGPT and Codex
+  {
+    name: "012_oauth",
+    sql: `
+      CREATE TABLE IF NOT EXISTS oauth_clients (
+        id            text PRIMARY KEY,
+        name          text NOT NULL,
+        redirect_uris text NOT NULL,
+        created_at    timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS oauth_tokens (
+        token_hash text PRIMARY KEY,
+        kind       text NOT NULL,            -- access | refresh
+        agent_id   text NOT NULL REFERENCES agents(id),
+        client_id  text NOT NULL REFERENCES oauth_clients(id),
+        expires_at timestamptz NOT NULL,
+        revoked    boolean NOT NULL DEFAULT false,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS oauth_tokens_agent ON oauth_tokens(agent_id);
+    `,
+  },
 ];
