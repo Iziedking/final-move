@@ -52,6 +52,9 @@ export default [
       "packages/ui/src/ChessBoard.reference.tsx",
       "scripts/**",
       "vitest.config.ts",
+      // Server tests use bun:test types and are excluded from the server tsconfig,
+      // so the type-aware lint pass cannot parse them.
+      "apps/server/src/**/*.test.ts",
       // apps/web has its own eslint.config.mjs (Next.js flat config) so
       // next build uses it directly.  Exclude from the root flat config to avoid
       // running two conflicting rule sets and the "Next.js plugin not detected"
