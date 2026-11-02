@@ -10,13 +10,17 @@ import { useState, useEffect, useRef } from "react";
 import { signIn, useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
+import { DuelLobby } from "@/components/DuelLobby";
 
 type GameClass   = "open" | "human";
-type TimeControl = "3+2" | "5+3" | "10+5";
+type TimeControl = "3+0" | "3+2" | "5+0" | "5+3" | "10+0" | "10+5";
 
 const TIME_CONTROLS: { id: TimeControl; desc: string }[] = [
+  { id: "3+0", desc: "Blitz" },
   { id: "3+2", desc: "Blitz" },
+  { id: "5+0", desc: "Blitz" },
   { id: "5+3", desc: "Blitz" },
+  { id: "10+0", desc: "Rapid" },
   { id: "10+5", desc: "Rapid" },
 ];
 const CLASSES: { id: GameClass; label: string; desc: string }[] = [
@@ -30,7 +34,7 @@ function Segmented<T extends string>({ label, value, options, onChange }: {
   return (
     <div>
       <p className="mb-2 text-[13px] font-extrabold" style={{ color: "rgb(var(--ink-2))" }}>{label}</p>
-      <div role="radiogroup" aria-label={label} className="grid gap-1 rounded-[22px] p-1" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`, background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }}>
+      <div role="radiogroup" aria-label={label} className="grid gap-1 rounded-[22px] p-1" style={{ gridTemplateColumns: `repeat(${Math.min(options.length, 3)}, minmax(0, 1fr))`, background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }}>
         {options.map((o) => {
           const on = value === o.id;
           return (
@@ -179,6 +183,7 @@ export function PlayClient(): React.JSX.Element {
             <ChallengeLink gameClass={gameClass} tc={tc} />
           </div>
         )}
+        <div className="mt-6"><DuelLobby tc={tc} /></div>
       </main>
       <SiteFooter />
     </div>

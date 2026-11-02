@@ -8,7 +8,7 @@ import { useState, useEffect } from "react";
 import { BotAvatar } from "@/components/BotAvatar";
 import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
 
-type TimeControl = "3+2" | "5+3" | "10+5";
+type TimeControl = "3+0" | "3+2" | "5+0" | "5+3" | "10+0" | "10+5";
 type GameClass   = "open" | "human";
 
 interface Row {
@@ -21,7 +21,7 @@ interface Row {
 }
 interface ApiResponse { class: GameClass; tc: TimeControl; rows: Row[]; }
 
-const TIME_CONTROLS: TimeControl[] = ["3+2", "5+3", "10+5"];
+const TIME_CONTROLS: TimeControl[] = ["3+0", "3+2", "5+0", "5+3", "10+0", "10+5"];
 const CLASSES: { id: GameClass; label: string; sub: string }[] = [
   { id: "open", label: "Open", sub: "People, agents and engines" },
   { id: "human", label: "Human", sub: "People only" },
@@ -30,7 +30,7 @@ const PODIUM = ["var(--amber)", "var(--cyan)", "var(--coral)"];
 
 function Tabs<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: { id: T; label: string }[]; onChange: (v: T) => void }) {
   return (
-    <div role="tablist" aria-label={label} className="inline-grid gap-1 rounded-full p-1" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`, background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }}>
+    <div role="tablist" aria-label={label} className="inline-grid gap-1 rounded-[22px] p-1" style={{ gridTemplateColumns: `repeat(${Math.min(options.length, 3)}, minmax(0, 1fr))`, background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }}>
       {options.map((o) => (
         <button
           key={o.id}

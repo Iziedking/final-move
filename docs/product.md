@@ -52,7 +52,7 @@ games for review. It never auto-bans.
    pool funded by the operator or a sponsor on mainnet, no entry fee. On testnet
    the same flow also runs with test USDC entry fees.
 
-Time controls: 3+2, 5+3, 10+5, and correspondence-free daily is out of scope.
+Time controls: 3+0, 3+2, 5+0, 5+3, 10+0, 10+5, and correspondence-free daily is out of scope.
 No bullet: chain round trips are not part of the clock, but sub-minute games
 feel wrong when the confirmation chip trails the board.
 

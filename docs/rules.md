@@ -40,7 +40,7 @@ is merged.
 |---|---|
 | Win | Checkmate, opponent resigns, opponent's flag falls, opponent abandons |
 | Draw | Stalemate, threefold, fifty moves, insufficient material, agreement, flag fall against insufficient material |
-| Abandon | No move within 60 s of the clock starting, or disconnected for 60 s while on move |
+| Abandon | Disconnected for 60 s while on move. A connected player can think for as long as their clock allows; running out of time is a loss on time, not abandonment |
 | Aborted | A player never makes a first move within 30 s. No rating change, stakes refunded |
 
 Resignation, draw offers and draw acceptance are transactions too.

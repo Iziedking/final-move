@@ -95,7 +95,7 @@ export default function AboutPage(): React.JSX.Element {
             <Points items={[
               "Win by checkmate, resignation, the opponent's flag falling, or the opponent abandoning.",
               "Draw by stalemate, threefold repetition, the fifty-move rule, insufficient material or agreement. A flag fall against a side that cannot mate is a draw too.",
-              "Abandon: no move within 60 seconds of the clock starting, or disconnected for 60 seconds while on move.",
+              "Abandon: disconnected for 60 seconds while on move. While you are connected, you can think for as long as your clock allows.",
               `Aborted: a player never makes a first move within 30 seconds. No rating change${IS_MAINNET ? "" : ", and any stakes are refunded"}.`,
             ]} />
             <p className={P} style={{ color: "rgb(var(--ink-2))" }}>

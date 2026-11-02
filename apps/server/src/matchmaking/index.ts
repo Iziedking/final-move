@@ -16,7 +16,7 @@ import type { Rating } from "@final-move/chess";
 import { nanoid } from "../util/ids.ts";
 
 export type GameClass = "open" | "human";
-export type TimeControl = "3+2" | "5+3" | "10+5";
+export type TimeControl = "3+0" | "3+2" | "5+0" | "5+3" | "10+0" | "10+5";
 
 export interface QueueEntry {
   playerId:    string;

@@ -21,6 +21,7 @@ import {
   startClock,
   applyMoveClock,
   deleteClocks,
+  getClocks,
 } from "./clocks.ts";
 import {
   enqueueMoveJob,
@@ -339,13 +340,12 @@ async function _handleMove(
     return { ok: true, fen: fenAfter, wMs: clockResult.wMs, bMs: clockResult.bMs, over: true, result: res, reason: rea };
   }
 
-  // Set abandon timer for the next player.
-  // Rules (docs/rules.md): disconnect for 60 s while on move = lose.
-  // We also cap at the side's remaining clock so a flag fires first when
-  // the clock runs out before the 60 s window.
+  // Watch the next player. When this fires it checks the clock first (out of time is a
+  // timeout), then whether the player is still connected (gone for 60 s is abandonment).
+  // A connected player can think for as long as their clock allows.
   const nextColor = game.plyCount % 2 === 0 ? "w" : "b";
   const nextClock = nextColor === "w" ? clockResult.wMs : clockResult.bMs;
-  const abandonMs = Math.min(60_000, Math.max(5_000, nextClock));
+  const abandonMs = Math.min(60_000, Math.max(250, nextClock + 250));
   game.abandonTimer = setTimeout(() => handleAbandon(gameId), abandonMs);
 
   return { ok: true, fen: fenAfter, wMs: clockResult.wMs, bMs: clockResult.bMs, over: false };
@@ -387,7 +387,7 @@ export async function endGame(
     blackKind: game.blackKind,
     result,
     cls:       game.class,
-    tc:        `${game.baseSec / 60}+${game.incSec}` as "3+2" | "5+3" | "10+5",
+    tc:        `${game.baseSec / 60}+${game.incSec}` as import("../matchmaking/index.ts").TimeControl,
   }).then((delta) => {
     if (delta) {
       redis.publish(`game:${game.id}`, JSON.stringify({
@@ -527,11 +527,33 @@ export async function abortGame(gameId: string, reason: GameEndReason) {
   setTimeout(() => pruneMaps(gameId), 5_000);
 }
 
-async function handleAbandon(gameId: string) {
+/** index.ts answers whether a player still has a live connection (socket or recent API call). */
+let presenceCheck: ((gameId: string, playerId: string) => Promise<boolean>) | null = null;
+export function setPresenceCheck(fn: (gameId: string, playerId: string) => Promise<boolean>): void { presenceCheck = fn; }
+
+export async function handleAbandon(gameId: string) {
   const game = liveGames.get(gameId);
   if (!game || game.status !== "live") return;
   const onMove: "w" | "b" = game.plyCount % 2 === 0 ? "w" : "b";
   const loser: GameResult  = onMove === "w" ? "black" : "white";
+  const moverId = onMove === "w" ? game.whiteId : game.blackId;
+
+  // Out of time first: that is a timeout, or a draw if the other side can't mate.
+  const clocks = await getClocks(gameId, game.baseSec).catch(() => null);
+  const left = clocks ? (onMove === "w" ? clocks.wMs : clocks.bMs) : 0;
+  if (clocks && left <= 0) {
+    const o = outcome(game.position, repeatCount(game));
+    const isDraw = o.over && o.winner === null;
+    await endGame(game, isDraw ? "draw" : loser, isDraw ? "insufficient-material" : "timeout");
+    return;
+  }
+
+  // Still connected: keep thinking. Check again in a minute, or when the clock runs out.
+  const present = presenceCheck ? await presenceCheck(gameId, moverId).catch(() => false) : false;
+  if (present) {
+    game.abandonTimer = setTimeout(() => { void handleAbandon(gameId); }, Math.min(60_000, Math.max(250, left + 250)));
+    return;
+  }
   await endGame(game, loser, "abandon");
 }
 

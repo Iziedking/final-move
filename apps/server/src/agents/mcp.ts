@@ -15,7 +15,7 @@ import { Hono } from "hono";
 import { verifyApiKey, getAgentWallet } from "./index.ts";
 import { verifyAccessToken, resourceMetadataUrl } from "./oauth.ts";
 import { getLiveGame, handleMove, handleResign } from "../referee/game.ts";
-import { activeGameFor, createDuel, joinDuel, duelGameFor } from "./duels.ts";
+import { activeGameFor, createDuel, joinDuel, duelGameFor, listOpenDuels } from "./duels.ts";
 import { getClocks } from "../referee/clocks.ts";
 import { legalMoves, moveToUci, toFEN } from "@final-move/chess";
 import { sql } from "../db/client.ts";
@@ -72,7 +72,7 @@ const TOOLS = [
       type: "object",
       properties: {
         level:       { type: "integer", minimum: 1, maximum: 5, description: "Bot strength, 1 to 5. Default 2." },
-        timeControl: { type: "string", enum: ["3+2", "5+3", "10+5"], description: "Minutes + increment seconds. Default 10+5." },
+        timeControl: { type: "string", enum: ["3+0", "3+2", "5+0", "5+3", "10+0", "10+5"], description: "Minutes + increment seconds. Default 10+5." },
       },
     },
   },
@@ -82,10 +82,16 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        timeControl: { type: "string", enum: ["3+2", "5+3", "10+5"], description: "Default 10+5." },
+        timeControl: { type: "string", enum: ["3+0", "3+2", "5+0", "5+3", "10+0", "10+5"], description: "Default 10+5." },
         pure:        { type: "boolean", description: "Pure reasoning duel. Default true." },
+        open:        { type: "boolean", description: "List it in the public lobby so anyone can take it. Default true." },
       },
     },
+  },
+  {
+    name:        "list_open_duels",
+    description: "See duels waiting for an opponent in the public lobby: people and agents, with their declared model, time control and code. Join one with join_duel.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name:        "join_duel",
@@ -132,7 +138,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        timeControl: { type: "string", enum: ["3+2", "5+3", "10+5"] },
+        timeControl: { type: "string", enum: ["3+0", "3+2", "5+0", "5+3", "10+0", "10+5"] },
       },
       required: ["timeControl"],
     },
@@ -316,7 +322,7 @@ async function callTool(
       const level = Number(args.level ?? 2);
       if (!Number.isInteger(level) || level < 1 || level > 5) throw new Error("level must be 1 to 5");
       const tc = (args.timeControl as TimeControl) ?? "10+5";
-      if (!["3+2", "5+3", "10+5"].includes(tc)) throw new Error("timeControl must be 3+2, 5+3 or 10+5");
+      if (!["3+0", "3+2", "5+0", "5+3", "10+0", "10+5"].includes(tc)) throw new Error("timeControl must be 3+0, 3+2, 5+0, 5+3, 10+0 or 10+5");
       const current = activeGameFor(agentId);
       if (current) throw new Error(`You are already in game ${current}. Finish or resign it first.`);
       const wallet = await getAgentWallet(agentId);
@@ -330,7 +336,7 @@ async function callTool(
     }
 
     case "create_duel": {
-      const duel = await createDuel(agentId, { timeControl: args.timeControl, pure: args.pure });
+      const duel = await createDuel({ id: agentId, kind: "agent" }, { timeControl: args.timeControl, pure: args.pure, open: args.open });
       const until = Date.now() + 20_000;
       while (Date.now() < until) {
         await new Promise((r) => setTimeout(r, 500));
@@ -344,11 +350,16 @@ async function callTool(
     }
 
     case "join_duel": {
-      const joined = await joinDuel(agentId, String(args.code ?? "").trim());
+      const joined = await joinDuel({ id: agentId, kind: "agent" }, String(args.code ?? "").trim());
       return {
         ...joined,
         next: joined.color === "w" ? "You are white and move first. Call wait_for_turn." : "You are black. Call wait_for_turn.",
       };
+    }
+
+    case "list_open_duels": {
+      const duels = await listOpenDuels();
+      return { duels, next: duels.length ? "Call join_duel with a code to play." : "Nobody is waiting. Call create_duel to start one." };
     }
 
     case "check_duel": {

@@ -16,8 +16,11 @@ import { HeroBoard } from "@/components/HeroBoard";
 import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
 
 const TIME_CONTROLS = [
+  { id: "3+0",  label: "3 + 0",  desc: "Blitz" },
   { id: "3+2",  label: "3 + 2",  desc: "Blitz" },
+  { id: "5+0",  label: "5 + 0",  desc: "Blitz" },
   { id: "5+3",  label: "5 + 3",  desc: "Blitz" },
+  { id: "10+0", label: "10 + 0", desc: "Rapid" },
   { id: "10+5", label: "10 + 5", desc: "Rapid" },
 ] as const;
 
@@ -364,7 +367,7 @@ function PlayModal({ session, onClose }: { session: Session | null; onClose: () 
           <p className="mb-2 text-[13px] font-extrabold" style={{ color: "rgb(var(--ink-2))" }}>
             Time control <span className="font-semibold" style={{ color: "rgb(var(--ink-3))" }}>· minutes, plus seconds back after each move</span>
           </p>
-          <div role="radiogroup" aria-label="Time control" className="grid grid-cols-3 gap-1 rounded-full p-1" style={{ background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }}>
+          <div role="radiogroup" aria-label="Time control" className="grid grid-cols-3 gap-1 rounded-[22px] p-1" style={{ background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }}>
             {TIME_CONTROLS.map((tc) => {
               const on = timeCtl === tc.id;
               return (

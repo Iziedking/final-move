@@ -18,7 +18,7 @@ import { parseFEN, repetitionKey, START_FEN, type Position } from "@final-move/c
 import { sql } from "../db/client.ts";
 import { redis } from "../db/redis.ts";
 
-import { abortGame, endGame as endGameFn } from "./game.ts";
+import { abortGame, handleAbandon } from "./game.ts";
 import { enqueueMoveJob, enqueueEndGame, startWorker } from "../chain/writer.ts";
 import { cfg } from "../config/index.ts";
 import { createHash } from "crypto";
@@ -134,14 +134,9 @@ export async function rehydrateLiveGames(): Promise<void> {
         abortGame(row.id, "aborted").catch(() => {});
       }, 30_000);
     } else if (row.status === "live" && lastMove) {
-      // Re-arm a 60s abandon timer from now (conservative — reset on next move)
-      game.abandonTimer = setTimeout(async () => {
-        const g = _liveGames?.get(row.id);
-        if (!g || g.status !== "live") return;
-        const onMove = g.plyCount % 2 === 0 ? "w" : "b";
-        const loser = onMove === "w" ? "black" : "white";
-        await endGameFn(g, loser as "white" | "black", "abandon");
-      }, 60_000);
+      // After a restart, give everyone a minute to reconnect. The same check as live play
+      // then applies: out of time is a timeout, still connected keeps playing.
+      game.abandonTimer = setTimeout(() => { void handleAbandon(row.id); }, 60_000);
     }
 
     // Re-enqueue any moves stuck in 'queued' or 'submitted' state

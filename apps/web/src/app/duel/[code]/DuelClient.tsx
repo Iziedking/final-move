@@ -8,7 +8,9 @@ import Link from "next/link";
 import type React from "react";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { signIn, useSession } from "next-auth/react";
 import { API_BASE } from "@/lib/api";
+import { apiFetch } from "@/lib/session";
 import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
 
 interface Duel {
@@ -17,7 +19,7 @@ interface Duel {
   gameId: string | null;
   timeControl: string;
   pure: boolean;
-  creator: { name: string; model: string | null };
+  creator: { id: string; kind: "agent" | "user"; name: string; model: string | null };
 }
 
 type Tab = "mcp" | "rest" | "ws";
@@ -28,6 +30,20 @@ export function DuelClient({ code }: { code: string }): React.JSX.Element {
   const [missing, setMissing] = useState(false);
   const [tab, setTab] = useState<Tab>("mcp");
   const [copied, setCopied] = useState("");
+  const { data: session } = useSession();
+  const userId = session?.user?.id ?? null;
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState("");
+
+  const playIt = async () => {
+    if (!userId) { void signIn("twitter", { callbackUrl: `/duel/${code}` }); return; }
+    setJoining(true); setJoinError("");
+    const r = await apiFetch(`/v1/duels/${encodeURIComponent(code)}/join`, { method: "POST" }, userId).catch(() => null);
+    const d = (await r?.json().catch(() => null)) as { gameId?: string; error?: string } | null;
+    if (r?.ok && d?.gameId) { router.replace(`/game/${d.gameId}`); return; }
+    setJoinError(d?.error ?? "That didn't work. Try again.");
+    setJoining(false);
+  };
 
   // Poll until someone joins, then hand over to the live game.
   useEffect(() => {
@@ -98,7 +114,7 @@ export function DuelClient({ code }: { code: string }): React.JSX.Element {
               </div>
               <div>
                 <h1 className="font-display font-extrabold leading-tight" style={{ ...ink, fontSize: "clamp(28px, 5vw, 40px)" }}>
-                  {duel.creator.name} wants a game
+                  {duel.creator.id === userId ? "Your duel is waiting" : `${duel.creator.name} wants a game`}
                 </h1>
                 {duel.creator.model && (
                   <p className="mt-1 text-[15px] font-bold" style={ink2}>Declared model: {duel.creator.model}</p>
@@ -109,6 +125,19 @@ export function DuelClient({ code }: { code: string }): React.JSX.Element {
                   {duel.pure && " In a pure duel neither side gets a list of legal moves or any outside help, so it comes down to the model's own reasoning."}
                 </p>
               </div>
+
+              {duel.creator.id !== userId && (
+                <div className="flex flex-col gap-2">
+                  <button type="button" className="pop-btn min-h-[52px] w-full text-[17px]" disabled={joining} onClick={() => { void playIt(); }}>
+                    {joining ? "Starting…" : userId ? "Play this yourself" : "Sign in with X to play"}
+                  </button>
+                  {joinError && <p role="alert" className="text-[14px] font-bold" style={{ color: "rgb(var(--coral))" }}>{joinError}</p>}
+                  <p className="text-center text-[13px] font-bold" style={ink2}>Or send an agent in:</p>
+                </div>
+              )}
+              {duel.creator.id === userId && (
+                <p className="text-[14px] font-bold" style={ink2}>Share this page. Any agent can join with the instructions below, or it shows up in the lobby for anyone to take.</p>
+              )}
 
               <div className="grid grid-cols-3 gap-1 rounded-full p-1" style={{ background: "rgb(var(--sky-2))", border: "2px solid rgb(var(--ink))" }} role="tablist">
                 {(Object.keys(snippets) as Tab[]).map((t) => (

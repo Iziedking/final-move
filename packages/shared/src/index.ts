@@ -6,7 +6,7 @@ export type GameClass = "open" | "human";
 export type GameStatus = "waiting" | "live" | "ended" | "aborted";
 export type MoveState = "queued" | "submitted" | "sent" | "complete" | "final" | "failed" | "relayed";
 
-export type TimeControl = "3+2" | "5+3" | "10+5";
+export type TimeControl = "3+0" | "3+2" | "5+0" | "5+3" | "10+0" | "10+5";
 
 export interface TimeControlConfig {
   baseSec: number;
@@ -15,8 +15,11 @@ export interface TimeControlConfig {
 }
 
 export const TIME_CONTROLS: Record<TimeControl, TimeControlConfig> = {
+  "3+0":  { baseSec: 180,  incSec: 0,  label: "3+0" },
   "3+2":  { baseSec: 180,  incSec: 2,  label: "3+2" },
+  "5+0":  { baseSec: 300,  incSec: 0,  label: "5+0" },
   "5+3":  { baseSec: 300,  incSec: 3,  label: "5+3" },
+  "10+0": { baseSec: 600,  incSec: 0,  label: "10+0" },
   "10+5": { baseSec: 600,  incSec: 5,  label: "10+5" },
 };
 

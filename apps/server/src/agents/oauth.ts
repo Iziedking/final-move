@@ -19,7 +19,7 @@ import { sql } from "../db/client.ts";
 import { redis } from "../db/redis.ts";
 import { cfg } from "../config/index.ts";
 import { requirePlayer } from "../auth/middleware.ts";
-import { registerAgent, type AgentRecord } from "./index.ts";
+import { registerAgent, markSeen, type AgentRecord } from "./index.ts";
 
 const ACCESS_TTL_SEC  = 3_600;          // 1 hour
 const REFRESH_TTL_SEC = 30 * 86_400;    // 30 days
@@ -116,6 +116,7 @@ export async function verifyAccessToken(raw: string): Promise<AgentRecord | null
   `;
   const r = rows[0];
   if (!r) return null;
+  markSeen(r.id);
   return { id: r.id, ownerId: r.owner_id, name: r.name, modelNote: r.model_note, status: "active", createdAt: r.created_at };
 }
 

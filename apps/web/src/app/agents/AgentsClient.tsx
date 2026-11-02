@@ -122,7 +122,7 @@ export function AgentsClient({ session }: { session: Session | null }): React.JS
             <code className="block min-w-0 flex-1 break-all rounded-xl p-3 font-mono text-[14px]" style={{ background: "rgb(var(--cloud-2))", border: "2px solid rgb(var(--ink))", color: "rgb(var(--ink))" }}>{`${host}/mcp`}</code>
             <CopyButton text={`${host}/mcp`} label="Copy address" />
           </div>
-          <ul className="grid grid-cols-1 gap-3 text-[14px] font-semibold md:grid-cols-3" style={{ color: "rgb(var(--ink-2))" }}>
+          <ul className="grid grid-cols-1 gap-3 text-[14px] font-semibold md:grid-cols-2 lg:grid-cols-3" style={{ color: "rgb(var(--ink-2))" }}>
             <li className="rounded-[var(--r)] p-3" style={{ border: "2px solid rgb(var(--ink) / 0.15)" }}>
               <span className="font-extrabold" style={{ color: "rgb(var(--ink))" }}>Claude</span>: in Settings, open Connectors, add a custom connector, paste the address and connect.
             </li>
@@ -131,6 +131,13 @@ export function AgentsClient({ session }: { session: Session | null }): React.JS
             </li>
             <li className="rounded-[var(--r)] p-3" style={{ border: "2px solid rgb(var(--ink) / 0.15)" }}>
               <span className="font-extrabold" style={{ color: "rgb(var(--ink))" }}>Codex</span>: run <code className="font-mono">codex mcp add final-move --url {`${host}/mcp`}</code>, then <code className="font-mono">codex mcp login final-move</code>.
+            </li>
+            <li className="rounded-[var(--r)] p-3" style={{ border: "2px solid rgb(var(--ink) / 0.15)" }}>
+              <span className="font-extrabold" style={{ color: "rgb(var(--ink))" }}>Claude Code</span>: run <code className="font-mono">claude mcp add --transport http final-move {`${host}/mcp`}</code>, then type <code className="font-mono">/mcp</code> and sign in.
+            </li>
+            <li className="rounded-[var(--r)] p-3 lg:col-span-2" style={{ border: "2px solid rgb(var(--ink) / 0.15)" }}>
+              <span className="font-extrabold" style={{ color: "rgb(var(--ink))" }}>Any other MCP app</span> (Cursor, VS Code, Windsurf, Zed and more): add a remote MCP server, often called HTTP or Streamable HTTP, with this address.
+              If the app supports sign-in it opens our page; if it only takes headers, register an agent below and send <code className="font-mono">Authorization: Bearer YOUR_API_KEY</code>.
             </li>
           </ul>
           <p className="text-[13px] font-semibold" style={{ color: "rgb(var(--ink-3))" }}>

@@ -21,6 +21,7 @@ import {
   handleMove,
   handleResign,
   getLiveGame,
+  setPresenceCheck,
 } from "./referee/game.ts";
 import { loadBots, getBot } from "./bots/index.ts";
 import { startWorker } from "./chain/writer.ts";
@@ -44,7 +45,7 @@ import {
   getAgentWallet,
 } from "./agents/index.ts";
 import { mcpRouter, setAgentBotGameStarter } from "./agents/mcp.ts";
-import { createDuel, joinDuel, publicDuel, setDuelStartedHook, DuelError } from "./agents/duels.ts";
+import { createDuel, joinDuel, publicDuel, listOpenDuels, setDuelStartedHook, DuelError } from "./agents/duels.ts";
 import { oauthRouter } from "./agents/oauth.ts";
 import { pushEvent, waitForEvent } from "./agents/events.ts";
 import {
@@ -220,7 +221,7 @@ app.post("/v1/games", async (c) => {
     playerAvatar?: string;
   };
   // Validate time control
-  const validTcs = ["3+2", "5+3", "10+5"];
+  const validTcs = ["3+0", "3+2", "5+0", "5+3", "10+0", "10+5"];
   if (!validTcs.includes(body.timeControl))
     return c.json({ error: "invalid_time_control" }, 400);
 
@@ -385,7 +386,7 @@ app.post("/v1/matchmaking/queue", async (c) => {
   const playerId = caller.sub;
 
   // Validate time control
-  const validTcs: TimeControl[] = ["3+2", "5+3", "10+5"];
+  const validTcs: TimeControl[] = ["3+0", "3+2", "5+0", "5+3", "10+0", "10+5"];
   if (!validTcs.includes(body.timeControl as TimeControl))
     return c.json({ error: "invalid_time_control" }, 400);
 
@@ -453,7 +454,7 @@ app.post("/v1/challenges", async (c) => {
   // Both sides of a human game need their own wallet, so challengers must be signed in.
   if (caller.type !== "user") return c.json({ error: "sign_in_required" }, 403);
   const body = await c.req.json() as { gameClass: GameClass; timeControl: TimeControl };
-  if (!["3+2", "5+3", "10+5"].includes(body.timeControl)) return c.json({ error: "invalid_time_control" }, 400);
+  if (!["3+0", "3+2", "5+0", "5+3", "10+0", "10+5"].includes(body.timeControl)) return c.json({ error: "invalid_time_control" }, 400);
   if (!["open", "human"].includes(body.gameClass)) return c.json({ error: "invalid_class" }, 400);
   const code = await createChallenge(caller.sub, body.gameClass, body.timeControl);
   const url  = `${cfg.PUBLIC_WEB_URL}/challenge/${code}`;
@@ -760,14 +761,32 @@ app.post("/v1/agent/duels", async (c) => {
   const agent = await verifyApiKey((c.req.header("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim());
   if (!agent) return c.json({ error: "unauthorized" }, 401);
   const body = await c.req.json().catch(() => ({})) as { timeControl?: unknown; pure?: unknown };
-  try { return c.json(await createDuel(agent.id, body), 201); } catch (e) { return duelError(c, e); }
+  try { return c.json(await createDuel({ id: agent.id, kind: "agent" }, body), 201); } catch (e) { return duelError(c, e); }
 });
 
 /** POST /v1/agent/duels/:code/join — join a duel; both sides then get game_start */
 app.post("/v1/agent/duels/:code/join", async (c) => {
   const agent = await verifyApiKey((c.req.header("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim());
   if (!agent) return c.json({ error: "unauthorized" }, 401);
-  try { return c.json(await joinDuel(agent.id, c.req.param("code"))); } catch (e) { return duelError(c, e); }
+  try { return c.json(await joinDuel({ id: agent.id, kind: "agent" }, c.req.param("code"))); } catch (e) { return duelError(c, e); }
+});
+
+/** GET /v1/duels — public lobby: duels waiting for an opponent */
+app.get("/v1/duels", async (c) => c.json({ duels: await listOpenDuels() }));
+
+/** POST /v1/duels — a signed-in person posts a duel for any agent or person to take */
+app.post("/v1/duels", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
+  if (caller.type !== "user") return c.json({ error: "Sign in with X to create a duel." }, 403);
+  const body = await c.req.json().catch(() => ({})) as { timeControl?: unknown; pure?: unknown; open?: unknown };
+  try { return c.json(await createDuel({ id: caller.sub, kind: "user" }, body), 201); } catch (e) { return duelError(c, e); }
+});
+
+/** POST /v1/duels/:code/join — a signed-in person takes a duel */
+app.post("/v1/duels/:code/join", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
+  if (caller.type !== "user") return c.json({ error: "Sign in with X to play a duel." }, 403);
+  try { return c.json(await joinDuel({ id: caller.sub, kind: "user" }, c.req.param("code"))); } catch (e) { return duelError(c, e); }
 });
 
 /** GET /v1/duels/:code — public: what the share page shows */
@@ -1554,20 +1573,32 @@ app.route("/mcp", mcpRouter);
 app.route("/", oauthRouter);
 
 // Duels: tell both agents the game started (MCP agents find out by polling).
-setDuelStartedHook(async ({ gameId, whiteId, blackId, timeControl, baseSec, incSec }) => {
-  for (const [id, color, oppId] of [[whiteId, "w", blackId], [blackId, "b", whiteId]] as const) {
+setDuelStartedHook(async ({ gameId, white, black, timeControl, baseSec, incSec }) => {
+  for (const [me, color, opp] of [[white, "w", black], [black, "b", white]] as const) {
+    if (me.kind !== "agent") continue; // people find out from the duel page or the game page
     const start: ServerToAgent = {
       type:        "game_start",
       gameId,
       color,
-      opponent:    { name: await displayName(oppId, "agent"), kind: "agent" },
+      opponent:    { name: await displayName(opp.id, opp.kind), kind: opp.kind === "user" ? "human" : "agent" },
       timeControl: { baseSec, incSec, label: timeControl as TimeControl },
     };
-    const ws = agentConnections.get(id);
+    const ws = agentConnections.get(me.id);
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(start));
-    else await pushEvent(id, start);
+    else await pushEvent(me.id, start);
   }
-  await sendYourTurn(gameId, whiteId, "w");
+  if (white.kind === "agent") await sendYourTurn(gameId, white.id, "w");
+});
+
+// Abandonment needs a real disconnect: an open game socket, an agent socket, or an API call
+// in the last 75 s all count as connected. Bots are always connected.
+setPresenceCheck(async (gameId, playerId) => {
+  const game = getLiveGame(gameId);
+  const kind = game ? (game.whiteId === playerId ? game.whiteKind : game.blackKind) : "user";
+  if (kind === "bot") return true;
+  if (gameRooms.get(gameId)?.get(playerId)?.readyState === WebSocket.OPEN) return true;
+  if (agentConnections.get(playerId)?.readyState === WebSocket.OPEN) return true;
+  return (await redis.exists(`seen:${playerId}`)) === 1;
 });
 
 // MCP play_bot: an agent against a house bot, from the agent's own wallet.
@@ -2027,7 +2058,7 @@ agentWss.on("connection", (ws, req) => {
 
       if (msg.type === "create_duel") {
         try {
-          const duel = await createDuel(agentId, { timeControl: msg.timeControl, pure: msg.pure });
+          const duel = await createDuel({ id: agentId, kind: "agent" }, { timeControl: msg.timeControl, pure: msg.pure });
           send({ type: "duel_created", ...duel });
         } catch (e) {
           send({ type: "error", code: "duel_failed", message: e instanceof DuelError ? e.message : "Could not create the duel." });
@@ -2037,7 +2068,7 @@ agentWss.on("connection", (ws, req) => {
 
       if (msg.type === "join_duel") {
         try {
-          await joinDuel(agentId, String(msg.code ?? ""));
+          await joinDuel({ id: agentId, kind: "agent" }, String(msg.code ?? ""));
           // game_start and the first your_turn arrive through the duel start hook.
         } catch (e) {
           send({ type: "error", code: "duel_failed", message: e instanceof DuelError ? e.message : "Could not join the duel." });

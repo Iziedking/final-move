@@ -520,6 +520,22 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
   }, [livePly]);
 
   // ── Before the first state arrives ─────────────────────────────────────────
+  // Premove: queued while the opponent thinks, played the moment the turn comes back if
+  // it's still legal. A queued move that became illegal is dropped with a soft thud.
+  const [premove, setPremove] = useState<string | null>(null);
+  const myColorNow = gameState ? (injectedColor ?? (gameState.white.id === playerId ? "w" : gameState.black.id === playerId ? "b" : null)) : null;
+  const liveNow = gameState?.status === "live" || gameState?.status === "waiting";
+  const onMoveNow = !!gameState && !!myColorNow && myColorNow === gameState.turn && liveNow;
+  const fenNow = gameState?.fen;
+  useEffect(() => {
+    if (!premove || !onMoveNow || !fenNow) return;
+    const legalNow = engineLegalMoves(parseFEN(fenNow)).map(moveToUci);
+    const pick = legalNow.includes(premove) ? premove : null;
+    setPremove(null);
+    if (pick) sendMove(pick); else sfx.illegal();
+  }, [onMoveNow, premove, fenNow, sendMove]);
+  useEffect(() => { if (!liveNow) setPremove(null); }, [liveNow]);
+
   if (!gameState) {
     return (
       <div className="flex min-h-screen items-center justify-center p-4" style={{ background: "rgb(var(--sky))" }}>
@@ -542,6 +558,11 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
   const playing = gs.status === "live" || gs.status === "waiting";
   const reviewing = reviewPly !== null;
   const iAmOnMove = !!myColor && myColor === gs.turn && playing;
+  // Moves the player could queue now, as if it were their turn in this position.
+  const premoveCandidates: string[] = (() => {
+    if (!playing || iAmOnMove || reviewing || !myColor) return [];
+    try { return engineLegalMoves({ ...parseFEN(gs.fen), turn: myColor, ep: -1 }).map(moveToUci); } catch { return []; }
+  })();
   const opponent = myColor === "w" ? gs.black : myColor === "b" ? gs.white : null;
   const vsBot = opponent?.kind === "bot";
 
@@ -638,7 +659,10 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
               flipped={manualFlip}
               onMove={sendMove}
               onIllegal={sfx.illegal}
-              disabled={!iAmOnMove || reviewing}
+              premoves={premoveCandidates}
+              premove={premove}
+              onPremove={setPremove}
+              disabled={!playing || reviewing}
               lastMoveState={lastMoveState}
             />
             {showEnd && (

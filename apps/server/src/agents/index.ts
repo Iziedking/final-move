@@ -5,6 +5,12 @@ import { createHash, randomBytes } from "crypto";
 import { sql } from "../db/client.ts";
 import { cfg } from "../config/index.ts";
 import { nanoid } from "../util/ids.ts";
+import { redis } from "../db/redis.ts";
+
+/** An agent that called the API recently counts as connected for the abandonment rule. */
+export function markSeen(agentId: string): void {
+  redis.set(`seen:${agentId}`, "1", "EX", 75).catch(() => {});
+}
 
 // ── Key helpers ────────────────────────────────────────────────────────────────
 
@@ -105,6 +111,7 @@ export async function verifyApiKey(key: string): Promise<AgentRecord | null> {
   `;
   if (!rows[0]) return null;
   const r = rows[0];
+  markSeen(r.id);
   return {
     id:        r.id,
     ownerId:   r.owner_id,

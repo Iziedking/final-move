@@ -52,6 +52,11 @@ interface PlayBoardProps {
   onMove: (uci: string) => void;
   /** A piece was dragged to a square it can't move to. */
   onIllegal?: () => void;
+  /** Moves the player may queue while it is the opponent's turn. */
+  premoves?: string[];
+  /** The queued premove, shown on the board until it plays or is cancelled. */
+  premove?: string | null;
+  onPremove?: (uci: string | null) => void;
   disabled?: boolean;
   /** Chain state of the last move, for the on-board mark. */
   lastMoveState?: ChainRailEntry["state"];
@@ -74,6 +79,9 @@ export function PlayBoard({
   flipped: flippedProp = false,
   onMove,
   onIllegal,
+  premoves,
+  premove = null,
+  onPremove,
   disabled = false,
   lastMoveState,
 }: PlayBoardProps): React.JSX.Element {
@@ -101,18 +109,43 @@ export function PlayBoard({
 
   const myTurn = !disabled && myColor !== null && myColor === turn;
 
+  // While the opponent thinks, the player can queue a premove.
+  const premoveMode = !myTurn && !disabled && myColor !== null && !!onPremove;
+  const activeMoves = useMemo(
+    () => (myTurn ? legalMoves : premoveMode ? premoves ?? [] : []),
+    [myTurn, premoveMode, legalMoves, premoves],
+  );
+
   const movable = useMemo<Set<number>>(() => {
-    if (!myTurn) return new Set();
-    return new Set(legalMoves.map((u) => algToIdx(u.slice(0, 2))));
-  }, [legalMoves, myTurn]);
+    if (!myTurn && !premoveMode) return new Set();
+    return new Set(activeMoves.map((u) => algToIdx(u.slice(0, 2))));
+  }, [activeMoves, myTurn, premoveMode]);
 
   const targetsFrom = useCallback(
     (from: number) => {
       const alg = idxToAlg(from);
-      return new Set(legalMoves.filter((u) => u.startsWith(alg)).map((u) => algToIdx(u.slice(2, 4))));
+      return new Set(activeMoves.filter((u) => u.startsWith(alg)).map((u) => algToIdx(u.slice(2, 4))));
     },
-    [legalMoves],
+    [activeMoves],
   );
+
+  // Castling also works by dropping the king on its own rook, as on most chess sites.
+  const resolveTarget = useCallback(
+    (from: number, to: number): number | null => {
+      const targets = targetsFrom(from);
+      if (targets.has(to)) return to;
+      const king = board[from];
+      const rook = board[to];
+      if ((king === "K" && rook === "R") || (king === "k" && rook === "r")) {
+        const castleTo = to % 8 === 7 ? from + 2 : to % 8 === 0 ? from - 2 : -1;
+        if (targets.has(castleTo)) return castleTo;
+      }
+      return null;
+    },
+    [board, targetsFrom],
+  );
+  const premoveFrom = premove ? algToIdx(premove.slice(0, 2)) : -1;
+  const premoveTo = premove ? algToIdx(premove.slice(2, 4)) : -1;
   const activeFrom = drag?.idx ?? selected;
   const legalTargets = useMemo(() => (activeFrom === null ? new Set<number>() : targetsFrom(activeFrom)), [activeFrom, targetsFrom]);
 
@@ -120,11 +153,19 @@ export function PlayBoard({
   useEffect(() => { setSelected(null); setPromo(null); }, [fen]);
 
   const tryMove = useCallback(
-    (from: number, to: number): boolean => {
-      if (!targetsFrom(from).has(to)) return false;
+    (from: number, rawTo: number): boolean => {
+      const to = resolveTarget(from, rawTo);
+      if (to === null) return false;
       const piece = board[from];
       const toAlg = idxToAlg(to);
-      if ((piece === "P" && toAlg[1] === "8") || (piece === "p" && toAlg[1] === "1")) {
+      const promotes = (piece === "P" && toAlg[1] === "8") || (piece === "p" && toAlg[1] === "1");
+      if (premoveMode) {
+        // A queued promotion becomes a queen; there's no time to ask mid-move.
+        onPremove?.(idxToAlg(from) + toAlg + (promotes ? "q" : ""));
+        setSelected(null);
+        return true;
+      }
+      if (promotes) {
         setPromo({ from, to });
         return true;
       }
@@ -132,16 +173,18 @@ export function PlayBoard({
       setSelected(null);
       return true;
     },
-    [board, onMove, targetsFrom],
+    [board, onMove, onPremove, premoveMode, resolveTarget],
   );
 
   const handleSquare = useCallback(
     (idx: number) => {
-      if (!myTurn || promo) return;
+      if ((!myTurn && !premoveMode) || promo) return;
       if (selected !== null && selected !== idx && tryMove(selected, idx)) return;
+      // Tapping an empty square with nothing selected cancels a queued premove.
+      if (premoveMode && selected === null && !movable.has(idx) && premove) onPremove?.(null);
       setSelected(movable.has(idx) && selected !== idx ? idx : null);
     },
-    [myTurn, promo, selected, tryMove, movable],
+    [myTurn, premoveMode, premove, onPremove, promo, selected, tryMove, movable],
   );
 
   // ── Drag ────────────────────────────────────────────────────────────────────
@@ -150,7 +193,7 @@ export function PlayBoard({
     return el ? Number(el.getAttribute("data-sq")) : null;
   };
   const onPointerDown = (idx: number) => (e: React.PointerEvent) => {
-    if (!myTurn || promo || !movable.has(idx) || e.button !== 0) return;
+    if ((!myTurn && !premoveMode) || promo || !movable.has(idx) || e.button !== 0) return;
     (e.target as Element).setPointerCapture?.(e.pointerId);
     setDrag({ idx, x: e.clientX, y: e.clientY, moved: false });
   };
@@ -246,7 +289,7 @@ export function PlayBoard({
               aria-selected={isSel}
               tabIndex={movable.has(idx) || isLegal ? 0 : -1}
               onPointerDown={onPointerDown(idx)}
-              onClick={() => { if (!movable.has(idx) || !myTurn) handleSquare(idx); }}
+              onClick={() => { if (!movable.has(idx) || (!myTurn && !premoveMode)) handleSquare(idx); }}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleSquare(idx); } }}
               className="relative aspect-square"
               style={{
@@ -260,6 +303,8 @@ export function PlayBoard({
               {isLast && <span className="pointer-events-none absolute inset-0" style={{ boxShadow: "inset 0 0 0 4px rgb(var(--amber))", background: "rgb(var(--amber) / 0.18)" }} />}
               {/* Selected square */}
               {isSel && <span className="pointer-events-none absolute inset-0" style={{ background: "rgb(var(--violet) / 0.22)" }} />}
+              {/* Queued premove */}
+              {(idx === premoveFrom || idx === premoveTo) && <span className="pointer-events-none absolute inset-0" style={{ background: "rgb(var(--cyan) / 0.35)" }} aria-hidden />}
 
               {/* Coordinates on the edge squares */}
               {c === 0 && (

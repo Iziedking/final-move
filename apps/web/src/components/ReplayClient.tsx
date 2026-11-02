@@ -366,11 +366,22 @@ export function ReplayClient({ gameId, initialData }: Props): React.JSX.Element 
                 <button type="button" onClick={xIntent} className="pop-btn pop-btn-ghost px-3 text-[14px]">Post on X</button>
               </div>
               {shareNote && <p className="break-all text-[13px] font-bold" style={{ color: "rgb(var(--ink-2))" }} aria-live="polite">{shareNote}</p>}
-              {game.chainGameId && (
-                <a href={`${ARC_EXPLORER}/search?q=${game.chainGameId}`} target="_blank" rel="noopener noreferrer" className="text-center text-[14px] font-extrabold underline decoration-2 underline-offset-2" style={{ color: "rgb(var(--violet))" }}>
-                  Verify the whole game on Arc ↗
-                </a>
-              )}
+              {(() => {
+                // The explorer can't search by game id, so link the transactions that open and close it.
+                const created = data.chainEvents.find((e) => e.eventName === "GameCreated");
+                const ended = data.chainEvents.find((e) => e.eventName === "GameEnded");
+                if (!created && !ended) return null;
+                const link = "text-[14px] font-extrabold underline decoration-2 underline-offset-2";
+                return (
+                  <p className="text-center text-[14px] font-semibold" style={{ color: "rgb(var(--ink-2))" }}>
+                    Verify on Arc:{" "}
+                    {created && <a href={`${ARC_EXPLORER}/tx/${created.txHash}`} target="_blank" rel="noopener noreferrer" className={link} style={{ color: "rgb(var(--violet))" }}>game start ↗</a>}
+                    {created && ended && " · "}
+                    {ended && <a href={`${ARC_EXPLORER}/tx/${ended.txHash}`} target="_blank" rel="noopener noreferrer" className={link} style={{ color: "rgb(var(--violet))" }}>result ↗</a>}
+                    <span className="mt-1 block text-[12px]">Every move above links to its own transaction.</span>
+                  </p>
+                );
+              })()}
               <Link href="/" className="pop-btn pop-btn-ghost px-3 text-[14px]">Play a game</Link>
             </div>
           </aside>
