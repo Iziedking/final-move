@@ -1296,10 +1296,12 @@ app.get("/v1/games/:id/replay", async (c) => {
     `;
   }
 
-  // Player info
-  const [whiteUser, blackUser] = await Promise.all([
+  // Player info. Names come from displayName so agents and bots show their real names, not ids.
+  const [whiteUser, blackUser, whiteDisplay, blackDisplay] = await Promise.all([
     sql<{ handle: string; avatar: string | null }[]>`SELECT handle, avatar FROM users WHERE id=${game.white_id}`,
     sql<{ handle: string; avatar: string | null }[]>`SELECT handle, avatar FROM users WHERE id=${game.black_id}`,
+    displayName(game.white_id, game.white_kind),
+    displayName(game.black_id, game.black_kind),
   ]);
 
   return c.json({
@@ -1307,12 +1309,12 @@ app.get("/v1/games/:id/replay", async (c) => {
       id: game.id,
       whiteId: game.white_id,
       whiteKind: game.white_kind,
-      whiteName: whiteUser[0]?.handle ?? game.white_id,
+      whiteName: whiteDisplay,
       whiteAvatar: whiteUser[0]?.avatar ?? null,
       whiteAddress: game.white_address,
       blackId: game.black_id,
       blackKind: game.black_kind,
-      blackName: blackUser[0]?.handle ?? game.black_id,
+      blackName: blackDisplay,
       blackAvatar: blackUser[0]?.avatar ?? null,
       blackAddress: game.black_address,
       class: game.class,

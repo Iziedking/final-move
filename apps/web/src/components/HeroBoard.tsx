@@ -12,6 +12,7 @@ import { START_FEN } from "@final-move/chess";
 import { PlayBoard } from "@/components/PlayBoard";
 import { API_BASE } from "@/lib/api";
 import { botName } from "@/lib/bots";
+import { fetchNames } from "@/lib/names";
 import type { ChainRailEntry } from "@/lib/types";
 
 interface WatchRow { id: string; white_id: string; black_id: string; white_kind: string; black_kind: string; status: string; ply_count: number }
@@ -26,7 +27,9 @@ type Shown =
 function nameOf(id: string, kind: string, given?: string): string {
   if (kind === "bot") return botName(id) ?? "House bot";
   if (id.startsWith("guest")) return "Guest";
-  if (given && given !== id) return given.startsWith("@") ? given : `@${given}`;
+  const known = given && given !== id && given !== "Player" ? given : null;
+  // Agents keep the name their owner chose; only X handles get an @.
+  if (known) return kind === "agent" || known.startsWith("@") ? known : `@${known}`;
   return kind === "agent" ? "Agent" : "Player";
 }
 
@@ -69,7 +72,15 @@ export function HeroBoard(): React.JSX.Element {
       try {
         const w = (await fetch(`${API_BASE}/v1/watch`).then((r) => r.json())) as { games?: WatchRow[] };
         const live = w.games?.find((g) => g.status === "live" && g.ply_count > 0);
-        if (live) { pollLive(live, nameOf(live.white_id, live.white_kind), nameOf(live.black_id, live.black_kind)); return; }
+        if (live) {
+          const names = await fetchNames([live.white_id, live.black_id].filter((id) => !id.startsWith("bot_") && !id.startsWith("guest")));
+          pollLive(
+            live,
+            nameOf(live.white_id, live.white_kind, names[live.white_id]?.name),
+            nameOf(live.black_id, live.black_kind, names[live.black_id]?.name),
+          );
+          return;
+        }
         const feed = (await fetch(`${API_BASE}/v1/feed/recent`).then((r) => r.json())) as { moves?: { gameId: string }[] };
         const recent = feed.moves?.[0]?.gameId;
         if (!recent) { if (alive) setShown({ mode: "empty" }); later(pick, 15_000); return; }

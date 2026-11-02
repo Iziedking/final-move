@@ -51,6 +51,11 @@ function one(id: string): Promise<NameInfo> {
   return p;
 }
 
+/** Names for ids outside React, batched with every other lookup on the page. */
+export async function fetchNames(ids: string[]): Promise<Record<string, NameInfo>> {
+  return lookup(ids);
+}
+
 async function lookup(ids: string[]): Promise<Record<string, NameInfo>> {
   const infos = await Promise.all(ids.map(one));
   return Object.fromEntries(ids.map((id, i) => [id, infos[i]!]));
