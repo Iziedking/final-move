@@ -243,11 +243,11 @@ export default function WalletClient({ userId }: { userId: string }): React.JSX.
       </div>
 
       {/* Withdrawal history */}
-      {data.withdrawals.length > 0 && (
+      {(data.withdrawals ?? []).length > 0 && (
         <section className="sticker-card flex flex-col gap-3 p-6" aria-labelledby="wh-head">
           <h2 id="wh-head" className="font-display text-[22px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Withdrawal history</h2>
           <ul className="flex flex-col gap-2">
-            {data.withdrawals.map((w) => {
+            {(data.withdrawals ?? []).map((w) => {
               const st = WITHDRAWAL_STATE[w.state] ?? { label: w.state, bg: "var(--cloud)", fg: "var(--ink-2)" };
               return (
                 <li key={w.id} className="flex flex-col gap-1 rounded-xl px-3 py-2.5" style={{ background: "rgb(var(--cloud-2))" }}>
@@ -306,14 +306,16 @@ function WithdrawCard({ userId, withdrawableUsdc6, isTestnet, onSuccess }: Withd
   // Round DOWN so the Max value never exceeds what the server will accept.
   const withdrawableFloor = Number(withdrawableUsdc6) / 1_000_000;
   const withdrawableDisplay = Math.floor(withdrawableFloor * 100) / 100;
-  const amountUsdc6 = BigInt(Math.round(parseFloat(amount || "0") * 1_000_000));
+  // BigInt throws on NaN and Infinity, so a partial entry like "." must not reach it.
+  const parsedAmount = parseFloat(amount || "0");
+  const amountUsdc6 = Number.isFinite(parsedAmount) && parsedAmount > 0 ? BigInt(Math.round(parsedAmount * 1_000_000)) : 0n;
 
   const setMax = () => setAmount(withdrawableDisplay.toFixed(6));
 
   const validate = (): boolean => {
     if (!dest.trim()) { setFormErr("Enter a destination address."); return false; }
     if (!/^0x[0-9a-fA-F]{40}$/.test(dest.trim())) { setFormErr("Destination is not a valid address."); return false; }
-    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) { setFormErr("Enter an amount."); return false; }
+    if (!amount || !Number.isFinite(parseFloat(amount)) || parseFloat(amount) <= 0) { setFormErr("Enter an amount."); return false; }
     if (amountUsdc6 > withdrawableUsdc6) { setFormErr(`Maximum is ${withdrawableDisplay.toFixed(2)} USDC.`); return false; }
     setFormErr("");
     return true;
