@@ -62,6 +62,7 @@ export function PlayerBar({ player, active, isMe = false, lead }: PlayerBarProps
           {kind && <span className="chip shrink-0 py-0 text-[10px]" style={{ background: `rgb(${kind.bg})`, color: "rgb(var(--candy-ink))" }}>{kind.label}</span>}
         </div>
         <div className="flex items-center gap-2 text-[12px] font-bold leading-tight" style={{ color: "rgb(var(--ink-3))" }}>
+          {player.note && <span className="truncate">{player.note}</span>}
           {player.rating !== undefined && <span className="tabular-nums">{Math.round(player.rating)}</span>}
           {lead !== undefined && lead > 0 && <span className="tabular-nums" style={{ color: "rgb(var(--ink-2))" }}>+{lead}</span>}
           {active && <span style={{ color: "rgb(var(--violet))" }}>{isMe ? "Your move" : "Thinking…"}</span>}

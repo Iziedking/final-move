@@ -5,7 +5,7 @@
  *   /ws        — browser clients (game UI)
  *   /v1/agent  — agent API (Stage 5)
  */
-import { Hono, type MiddlewareHandler } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -43,7 +43,8 @@ import {
   listAgents,
   getAgentWallet,
 } from "./agents/index.ts";
-import { mcpRouter } from "./agents/mcp.ts";
+import { mcpRouter, setAgentBotGameStarter } from "./agents/mcp.ts";
+import { createDuel, joinDuel, publicDuel, setDuelStartedHook, DuelError } from "./agents/duels.ts";
 import { pushEvent, waitForEvent } from "./agents/events.ts";
 import {
   createTournament,
@@ -180,12 +181,13 @@ app.get("/v1/games/:id", (c) => {
   const id   = c.req.param("id");
   const game = getLiveGame(id);
   if (!game) return c.json({ error: "not_found" }, 404);
-  const legal = legalMoves(game.position).map((m) => moveToUci(m));
+  const legal = game.mode === "pure" ? [] : legalMoves(game.position).map((m) => moveToUci(m));
   return c.json({
     gameId:   id,
     fen:      toFEN(game.position),
     moves:    game.moves,
     plyCount: game.plyCount,
+    mode:     game.mode ?? "standard",
     legalMoves: legal,
     status:   game.status,
     result:   game.result,
@@ -743,6 +745,34 @@ app.get("/v1/agent/next", async (c) => {
   const event = await waitForEvent(agent.id, wait);
   if (!event) return c.json({ type: "idle" });
   return c.json(event);
+});
+
+/** Duel errors carry their own status and a message written for the agent's owner. */
+function duelError(c: Context, e: unknown) {
+  if (e instanceof DuelError) return c.json({ error: e.message }, e.status);
+  console.error("[duel]", (e as Error).message);
+  return c.json({ error: "duel_failed" }, 500);
+}
+
+/** POST /v1/agent/duels — create a duel and get a code and a share link */
+app.post("/v1/agent/duels", async (c) => {
+  const agent = await verifyApiKey((c.req.header("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim());
+  if (!agent) return c.json({ error: "unauthorized" }, 401);
+  const body = await c.req.json().catch(() => ({})) as { timeControl?: unknown; pure?: unknown };
+  try { return c.json(await createDuel(agent.id, body), 201); } catch (e) { return duelError(c, e); }
+});
+
+/** POST /v1/agent/duels/:code/join — join a duel; both sides then get game_start */
+app.post("/v1/agent/duels/:code/join", async (c) => {
+  const agent = await verifyApiKey((c.req.header("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim());
+  if (!agent) return c.json({ error: "unauthorized" }, 401);
+  try { return c.json(await joinDuel(agent.id, c.req.param("code"))); } catch (e) { return duelError(c, e); }
+});
+
+/** GET /v1/duels/:code — public: what the share page shows */
+app.get("/v1/duels/:code", async (c) => {
+  const duel = await publicDuel(c.req.param("code"));
+  return duel ? c.json(duel) : c.json({ error: "not_found" }, 404);
 });
 
 /** POST /v1/agent/queue — join matchmaking via REST */
@@ -1519,6 +1549,51 @@ app.get("/v1/games/:id/share", async (c) => {
 // ── MCP ────────────────────────────────────────────────────────────────────────
 app.route("/mcp", mcpRouter);
 
+// Duels: tell both agents the game started (MCP agents find out by polling).
+setDuelStartedHook(async ({ gameId, whiteId, blackId, timeControl, baseSec, incSec }) => {
+  for (const [id, color, oppId] of [[whiteId, "w", blackId], [blackId, "b", whiteId]] as const) {
+    const start: ServerToAgent = {
+      type:        "game_start",
+      gameId,
+      color,
+      opponent:    { name: await displayName(oppId, "agent"), kind: "agent" },
+      timeControl: { baseSec, incSec, label: timeControl as TimeControl },
+    };
+    const ws = agentConnections.get(id);
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(start));
+    else await pushEvent(id, start);
+  }
+  await sendYourTurn(gameId, whiteId, "w");
+});
+
+// MCP play_bot: an agent against a house bot, from the agent's own wallet.
+setAgentBotGameStarter(async ({ agentId, wallet, botId, timeControl }) => {
+  await loadBots();
+  const bot = getBot(botId);
+  if (!bot) throw new Error("bot_not_found");
+  if (!bot.walletId || !bot.address) throw new Error("This bot is not ready yet. Try another level.");
+  const [base, inc] = timeControl.split("+").map((n) => parseInt(n, 10));
+  const agentWhite = Math.random() < 0.5;
+  const game = await createGame({
+    whiteId:       agentWhite ? agentId : bot.id,
+    whiteKind:     agentWhite ? "agent" : "bot",
+    whiteAddr:     agentWhite ? wallet.address : bot.address,
+    whiteWalletId: agentWhite ? wallet.walletId : bot.walletId,
+    blackId:       agentWhite ? bot.id : agentId,
+    blackKind:     agentWhite ? "bot" : "agent",
+    blackAddr:     agentWhite ? bot.address : wallet.address,
+    blackWalletId: agentWhite ? bot.walletId : wallet.walletId,
+    gameClass:    "open",
+    baseSec:      (base ?? 10) * 60,
+    incSec:       inc ?? 5,
+    timeControl,
+  });
+  startWorker(wallet.walletId);
+  startWorker(bot.walletId);
+  scheduleBot(game.id, bot.id, agentWhite ? "b" : "w");
+  return { gameId: game.id, color: agentWhite ? "w" : "b", opponent: bot.name };
+});
+
 // ── Bot auto-play loop ─────────────────────────────────────────────────────────
 
 // Per-bot minimum think time in ms (on top of a small random jitter).
@@ -1688,8 +1763,17 @@ async function buildFullGameState(gameId: string) {
     displayName(game.whiteId, game.whiteKind),
     displayName(game.blackId, game.blackKind),
   ]);
-  const white = { id: game.whiteId, kind: game.whiteKind, handle: whiteName, color: "w" as const };
-  const black = { id: game.blackId, kind: game.blackKind, handle: blackName, color: "b" as const };
+  // Agents show the model their owner declared, so a duel reads as model against model.
+  const agentIds = [game.whiteId, game.blackId].filter((_, i) => (i === 0 ? game.whiteKind : game.blackKind) === "agent");
+  const notes = new Map<string, string>();
+  if (agentIds.length) {
+    const rows = await sql<{ id: string; model_note: string | null }[]>`
+      SELECT id, model_note FROM agents WHERE id IN ${sql(agentIds)}
+    `.catch(() => []);
+    for (const r of rows) if (r.model_note) notes.set(r.id, r.model_note);
+  }
+  const white = { id: game.whiteId, kind: game.whiteKind, handle: whiteName, color: "w" as const, note: notes.get(game.whiteId) };
+  const black = { id: game.blackId, kind: game.blackKind, handle: blackName, color: "b" as const, note: notes.get(game.blackId) };
 
   let clockWMs = 0, clockBMs = 0;
   try {
@@ -1732,6 +1816,7 @@ async function buildFullGameState(gameId: string) {
     status:   game.status,
     result:   game.result,
     reason:   game.reason,
+    mode:     game.mode ?? "standard",
     white,
     black,
     clockWMs,
@@ -1843,7 +1928,16 @@ subscriber.on("pmessage", (_pat: string, channel: string, message: string) => {
 
   for (const pid of [game.whiteId, game.blackId]) {
     const ws = agentConnections.get(pid);
-    if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      const kind = pid === game.whiteId ? game.whiteKind : game.blackKind;
+      if (kind !== "agent") continue;
+      if (parsed.type === "game_end") pushEvent(pid, parsed).catch(() => {});
+      if (parsed.type === "move" && parsed.ply !== undefined) {
+        const nextId = game.plyCount % 2 === 0 ? game.whiteId : game.blackId;
+        if (pid === nextId) sendYourTurn(gameId, pid, game.plyCount % 2 === 0 ? "w" : "b").catch(() => {});
+      }
+      continue;
+    }
 
     // Always forward raw game events (chain, clock, game_end, etc.)
     ws.send(message);
@@ -1926,6 +2020,26 @@ agentWss.on("connection", (ws, req) => {
     if (!agentId) return; // not authed yet
     try {
       const msg = JSON.parse(raw.toString()) as AgentToServer & { type: string };
+
+      if (msg.type === "create_duel") {
+        try {
+          const duel = await createDuel(agentId, { timeControl: msg.timeControl, pure: msg.pure });
+          send({ type: "duel_created", ...duel });
+        } catch (e) {
+          send({ type: "error", code: "duel_failed", message: e instanceof DuelError ? e.message : "Could not create the duel." });
+        }
+        return;
+      }
+
+      if (msg.type === "join_duel") {
+        try {
+          await joinDuel(agentId, String(msg.code ?? ""));
+          // game_start and the first your_turn arrive through the duel start hook.
+        } catch (e) {
+          send({ type: "error", code: "duel_failed", message: e instanceof DuelError ? e.message : "Could not join the duel." });
+        }
+        return;
+      }
 
       if (msg.type === "queue") {
         // Join matchmaking
@@ -2030,10 +2144,11 @@ agentWss.on("connection", (ws, req) => {
 // Send your_turn to an agent's WS (or push to REST event queue)
 async function sendYourTurn(gameId: string, agentId: string, _color: "w" | "b") {
   const game = getLiveGame(gameId);
-  if (!game || game.status !== "live") return;
+  if (!game || (game.status !== "live" && game.status !== "waiting")) return;
   let wMs = 0, bMs = 0;
-  try { const c = await getClocks(gameId); wMs = c.wMs; bMs = c.bMs; } catch {}
-  const legal = legalMoves(game.position).map((m) => moveToUci(m));
+  try { const c = await getClocks(gameId, game.baseSec); wMs = c.wMs; bMs = c.bMs; } catch {}
+  // A pure duel tests the model's own reasoning, so it doesn't get the list.
+  const legal = game.mode === "pure" ? [] : legalMoves(game.position).map((m) => moveToUci(m));
   const msg: ServerToAgent = {
     type:    "your_turn",
     gameId,

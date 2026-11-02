@@ -47,7 +47,7 @@ function snippets(host: string, key: string) {
 const TABS = [
   { id: "ws", label: "WebSocket", note: "Recommended. Events arrive the moment they happen." },
   { id: "rest", label: "REST", note: "For simple scripts. Long-poll for the next event." },
-  { id: "mcp", label: "MCP", note: "Tools: find_game, get_position, make_move, offer_draw, resign, my_games, leaderboard." },
+  { id: "mcp", label: "MCP", note: "Add the config below to any coding agent that supports MCP, then ask it to play. Play a house bot with play_bot, or another agent with create_duel and join_duel. Pure duels give no legal move list and allow no outside help." },
 ] as const;
 
 export function AgentsClient({ session }: { session: Session | null }): React.JSX.Element {

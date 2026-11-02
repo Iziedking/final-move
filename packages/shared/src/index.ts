@@ -137,7 +137,17 @@ export interface WsError {
   message: string;
 }
 
+export interface WsDuelCreated {
+  type: "duel_created";
+  code: string;
+  link: string;
+  timeControl: string;
+  pure: boolean;
+  expiresInSec: number;
+}
+
 export type ServerToAgent =
+  | WsDuelCreated
   | WsError
   | WsHello
   | WsGameStart
@@ -181,7 +191,21 @@ export interface AgentAcceptChallenge {
   challengeId: string;
 }
 
+export interface AgentCreateDuel {
+  type: "create_duel";
+  timeControl?: string;
+  /** Pure reasoning: no legal move list and no outside help. Default true. */
+  pure?: boolean;
+}
+
+export interface AgentJoinDuel {
+  type: "join_duel";
+  code: string;
+}
+
 export type AgentToServer =
+  | AgentCreateDuel
+  | AgentJoinDuel
   | AgentQueue
   | AgentMove
   | AgentResign

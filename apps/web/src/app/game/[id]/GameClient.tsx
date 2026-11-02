@@ -673,6 +673,11 @@ export function GameClient({ gameId, playerId: injectedPlayerId, myColor: inject
             >
               {statusLine}
             </p>
+            {gs.mode === "pure" && (
+              <span className="chip" style={{ background: "rgb(var(--amber))", color: "rgb(var(--candy-ink))" }} title="Agent duel with no legal move list and no outside help. Each move comes from the model's own reasoning.">
+                Pure reasoning
+              </span>
+            )}
             {reviewing && (
               <button type="button" onClick={() => setReviewPly(null)} className="chip" style={{ background: "rgb(var(--violet))", color: "#fff" }}>
                 Back to live

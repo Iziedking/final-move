@@ -62,11 +62,11 @@ export async function rehydrateLiveGames(): Promise<void> {
     white_id: string; white_kind: string; white_address: string; white_wallet_id: string;
     black_id: string; black_kind: string; black_address: string; black_wallet_id: string;
     class: string; base_sec: number; inc_sec: number; time_control: string;
-    status: string; started_at: Date | null;
+    status: string; started_at: Date | null; mode: string | null;
   }[]>`
     SELECT id, chain_game_id, white_id, white_kind, white_address, white_wallet_id,
            black_id, black_kind, black_address, black_wallet_id,
-           class, base_sec, inc_sec, time_control, status, started_at
+           class, base_sec, inc_sec, time_control, status, started_at, mode
     FROM games
     WHERE status IN ('waiting', 'live')
     ORDER BY created_at
@@ -117,6 +117,7 @@ export async function rehydrateLiveGames(): Promise<void> {
       status:        row.status as "waiting" | "live" | "ended" | "aborted",
       chainLive:     true, // assume chain is live — createGame already ran before crash
       pendingMoves:  [],
+      mode:          row.mode === "pure" ? "pure" : "standard",
     };
 
     _liveGames.set(row.id, game);

@@ -491,4 +491,21 @@ export const migrations: { name: string; sql: string }[] = [
       CREATE INDEX IF NOT EXISTS withdrawals_state ON withdrawals(state);
     `,
   },
+
+  // ── 011 — Agent duels: pure reasoning mode and illegal move attempts
+  {
+    name: "011_duels",
+    sql: `
+      ALTER TABLE games ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'standard'; -- standard | pure
+      CREATE TABLE IF NOT EXISTS illegal_attempts (
+        id         bigserial PRIMARY KEY,
+        game_id    text NOT NULL,
+        player_id  text NOT NULL,
+        ply        int  NOT NULL,
+        uci        text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS illegal_attempts_game ON illegal_attempts(game_id, player_id);
+    `,
+  },
 ];

@@ -65,6 +65,7 @@ export interface LiveGame {
   pendingMoves: Array<{ kind: "move"; gameId: string; ply: number; uci: string; walletId: string; moveRowId: string }>;
   result?: GameResult;
   reason?: GameEndReason;
+  mode?: "standard" | "pure";
   abandonTimer?: ReturnType<typeof setTimeout>;
   abortTimer?: ReturnType<typeof setTimeout>;
 }
@@ -123,6 +124,8 @@ export interface CreateGameOpts {
   incSec: number;
   timeControl: string;
   escrowMatchId?: string;
+  /** "pure": agents get no legal move list and must reason from the position alone. */
+  mode?: "standard" | "pure";
 }
 
 export async function createGame(opts: CreateGameOpts): Promise<LiveGame> {
@@ -152,6 +155,7 @@ export async function createGame(opts: CreateGameOpts): Promise<LiveGame> {
     status: "waiting",
     chainLive: false,
     pendingMoves: [],
+    mode: opts.mode ?? "standard",
   };
 
   // Persist
@@ -159,12 +163,12 @@ export async function createGame(opts: CreateGameOpts): Promise<LiveGame> {
     INSERT INTO games
       (id, white_id, white_kind, black_id, black_kind, class, time_control,
        base_sec, inc_sec, status, chain_game_id, white_address, black_address,
-       white_wallet_id, black_wallet_id, escrow_match_id)
+       white_wallet_id, black_wallet_id, escrow_match_id, mode)
     VALUES
       (${gameId}, ${opts.whiteId}, ${opts.whiteKind}, ${opts.blackId}, ${opts.blackKind},
        ${opts.gameClass}, ${opts.timeControl}, ${opts.baseSec}, ${opts.incSec},
        'waiting', ${chainId}, ${opts.whiteAddr}, ${opts.blackAddr},
-       ${opts.whiteWalletId}, ${opts.blackWalletId}, ${matchId})
+       ${opts.whiteWalletId}, ${opts.blackWalletId}, ${matchId}, ${opts.mode ?? "standard"})
   `;
 
   liveGames.set(gameId, game);

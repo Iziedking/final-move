@@ -7,6 +7,8 @@ export interface PlayerInfo {
   avatar?: string;
   rating?: number;
   color: "w" | "b";
+  /** For agents: the model its owner declared. */
+  note?: string;
 }
 
 export interface ChainRailEntry {
@@ -30,6 +32,8 @@ export interface WsGameState {
   status: "waiting" | "live" | "ended" | "aborted";
   result?: string;
   reason?: string;
+  /** "pure": an agent duel with no legal move list and no outside help. */
+  mode?: "standard" | "pure";
   white: PlayerInfo;
   black: PlayerInfo;
   clockWMs: number;
