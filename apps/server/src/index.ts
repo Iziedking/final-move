@@ -959,7 +959,7 @@ app.post("/v1/stakes/:id/timeout-refund", async (c) => {
   }
 });
 
-/** GET /v1/wallet/:userId — USDC balance + recent transfers (self only) */
+/** GET /v1/wallet/:userId — USDC balance + withdrawal data + stake history (self only) */
 app.get("/v1/wallet/:userId", async (c) => {
   const caller = requirePlayer(c); if (!caller) return c.res;
   const userId = c.req.param("userId");
@@ -970,10 +970,16 @@ app.get("/v1/wallet/:userId", async (c) => {
   const wallet = walletRows[0];
   if (!wallet) return c.json({ error: "wallet_not_found" }, 404);
 
-  const { getWalletBalances } = await import("./chain/circle.ts");
+  const { getWalletBalances, getUsdcBalance } = await import("./chain/circle.ts");
+  const { WITHDRAW_GAS_RESERVE_USDC6 } = await import("./config/index.ts");
   const balances = await getWalletBalances(wallet.circle_wallet_id).catch(() => []);
   const usdc = balances.find((b) => b.token.symbol === "USDC");
   const balanceUsdc6 = usdc ? Math.round(parseFloat(usdc.amount) * 1_000_000) : 0;
+
+  // Live balance from Circle for accurate withdrawable calculation
+  const liveUsdc6 = await getUsdcBalance(wallet.circle_wallet_id).catch(() => BigInt(balanceUsdc6));
+  const gasReserve = WITHDRAW_GAS_RESERVE_USDC6;
+  const withdrawableUsdc6 = liveUsdc6 > gasReserve ? liveUsdc6 - gasReserve : 0n;
 
   // Recent stake deposits by this user
   const stakes = await sql<{
@@ -984,11 +990,23 @@ app.get("/v1/wallet/:userId", async (c) => {
     ORDER BY created_at DESC LIMIT 20
   `;
 
+  // Recent withdrawals by this user
+  const withdrawals = await sql<{
+    id: string; destination: string; amount_usdc6: bigint;
+    state: string; tx_hash: string | null; error: string | null; created_at: Date;
+  }[]>`
+    SELECT id, destination, amount_usdc6, state, tx_hash, error, created_at
+    FROM withdrawals WHERE user_id=${userId}
+    ORDER BY created_at DESC LIMIT 20
+  `;
+
   return c.json({
-    walletAddress: wallet.address,
+    walletAddress:     wallet.address,
     balanceUsdc6,
-    balanceDisplay: (balanceUsdc6 / 1_000_000).toFixed(2),
-    isTestnet: cfg.NETWORK === "testnet",
+    balanceDisplay:    (balanceUsdc6 / 1_000_000).toFixed(2),
+    withdrawableUsdc6: withdrawableUsdc6.toString(),
+    gasReserveUsdc6:   gasReserve.toString(),
+    isTestnet:         cfg.NETWORK === "testnet",
     deposits: stakes.map((s) => ({
       stakeOfferId: s.stake_offer_id,
       state:        s.state,
@@ -996,7 +1014,70 @@ app.get("/v1/wallet/:userId", async (c) => {
       explorerUrl:  s.tx_hash ? `${cfg.ARC_EXPLORER}/tx/${s.tx_hash}` : null,
       createdAt:    s.created_at,
     })),
+    withdrawals: withdrawals.map((w) => ({
+      id:           w.id,
+      destination:  w.destination,
+      amountUsdc6:  w.amount_usdc6.toString(),
+      amountDisplay:(Number(w.amount_usdc6) / 1_000_000).toFixed(2),
+      state:        w.state,
+      txHash:       w.tx_hash,
+      explorerUrl:  w.tx_hash ? `${cfg.ARC_EXPLORER}/tx/${w.tx_hash}` : null,
+      error:        w.error,
+      createdAt:    w.created_at,
+    })),
   });
+});
+
+/** POST /v1/wallet/withdraw — player USDC withdrawal */
+app.post("/v1/wallet/withdraw", ipRateLimit(), async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
+  let body: { destination?: unknown; amountUsdc?: unknown; idempotencyKey?: unknown };
+  try { body = await c.req.json() as typeof body; } catch { return c.json({ error: "invalid_json" }, 400); }
+
+  const destination   = typeof body.destination   === "string" ? body.destination.trim()   : "";
+  const amountUsdc    = typeof body.amountUsdc    === "number" ? body.amountUsdc            : parseFloat(String(body.amountUsdc ?? ""));
+  const idempotencyKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
+
+  if (!destination)    return c.json({ error: "destination is required" }, 400);
+  if (!idempotencyKey) return c.json({ error: "idempotencyKey is required" }, 400);
+  if (!Number.isFinite(amountUsdc)) return c.json({ error: "amountUsdc must be a number" }, 400);
+
+  const { initiateWithdrawal } = await import("./wallet/withdraw.ts");
+  try {
+    const result = await initiateWithdrawal({
+      callerId:       caller.sub,
+      callerType:     caller.type,
+      destination,
+      amountUsdc,
+      idempotencyKey,
+    });
+    const w = result.withdrawal;
+    return c.json({
+      id:             w.id,
+      state:          w.state,
+      destination:    w.destination,
+      amountDisplay:  (Number(w.amount_usdc6) / 1_000_000).toFixed(2),
+      circleTxId:     w.circle_tx_id,
+      txHash:         w.tx_hash,
+      alreadyExisted: result.alreadyExisted,
+    }, result.alreadyExisted ? 200 : 201);
+  } catch (err) {
+    const e = err as Error & { status?: number; code?: string };
+    // Only return the message when it came from our own WithdrawError (known user-facing text)
+    // or from an error we explicitly constructed with a user-facing message.
+    // All other errors get a generic message to avoid leaking internal details.
+    // Errors carrying a code were written for players, including the 502 that
+    // says the transfer status is unknown and will be checked.
+    const isUserFacing = e.constructor?.name === "WithdrawError" || e.code !== undefined || (e.status !== undefined && e.status < 500);
+    const message = isUserFacing
+      ? (e.message ?? "Withdrawal failed.")
+      : "An unexpected error occurred. Please try again.";
+    const status = (e.status ?? 500) as 400 | 403 | 404 | 409 | 500 | 502;
+    if (status >= 500) {
+      console.error("[withdraw route] internal error", e.message, e.stack);
+    }
+    return c.json({ error: message, code: e.code }, status);
+  }
 });
 
 // ── Tournament API ─────────────────────────────────────────────────────────────
@@ -2000,6 +2081,9 @@ async function main() {
 
   // Rehydrate live/waiting games from DB before accepting connections
   await rehydrateLiveGames().catch((e) => console.error("[rehydrate] failed:", (e as Error).message));
+
+  const { startWithdrawalReconciler } = await import("./wallet/withdraw.ts");
+  startWithdrawalReconciler();
 
   startWorker(cfg.REFEREE_WALLET_ID);
 

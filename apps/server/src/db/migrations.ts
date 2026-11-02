@@ -465,4 +465,30 @@ export const migrations: { name: string; sql: string }[] = [
 
     `,
   },
+
+  // ── 010 — Player withdrawals
+  //   Idempotency is scoped to the user: (user_id, idempotency_key) UNIQUE so
+  //   one player can never collide with another player's key.
+  {
+    name: "010_withdrawals",
+    sql: `
+      CREATE TABLE IF NOT EXISTS withdrawals (
+        id               text PRIMARY KEY,           -- "wd_" + nanoid(10)
+        user_id          text NOT NULL REFERENCES users(id),
+        circle_wallet_id text NOT NULL,
+        destination      text NOT NULL,
+        amount_usdc6     bigint NOT NULL,
+        idempotency_key  text NOT NULL,
+        circle_tx_id     text,
+        tx_hash          text,
+        state            text NOT NULL DEFAULT 'pending', -- pending|sent|complete|failed
+        error            text,
+        created_at       timestamptz NOT NULL DEFAULT now(),
+        updated_at       timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (user_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS withdrawals_user ON withdrawals(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS withdrawals_state ON withdrawals(state);
+    `,
+  },
 ];

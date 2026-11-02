@@ -34,6 +34,9 @@ const Env = z.object({
   // Guest games per UTC day across all guests (0 = unlimited). Guests cost real
   // gas on mainnet, so the default there is 50; testnet is unlimited.
   MAX_GUEST_GAMES_PER_DAY: z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().int().min(0).optional()),
+  // Withdrawal limits
+  WITHDRAW_MIN_USDC:       z.coerce.number().default(0.10),
+  WITHDRAW_DAILY_CAP_USDC: z.coerce.number().default(100),
 });
 
 function loadEnv() {
@@ -70,6 +73,10 @@ function loadEnv() {
 
 export const cfg = loadEnv();
 
-export const TOPUP_THRESHOLD_USDC6 = BigInt(Math.round(cfg.TOPUP_THRESHOLD_USDC * 1_000_000));
-export const TOPUP_AMOUNT_USDC6    = BigInt(Math.round(cfg.TOPUP_AMOUNT_USDC    * 1_000_000));
-export const TOPUP_DAILY_CAP_USDC6 = BigInt(Math.round(cfg.TOPUP_DAILY_CAP_USDC * 1_000_000));
+export const TOPUP_THRESHOLD_USDC6  = BigInt(Math.round(cfg.TOPUP_THRESHOLD_USDC * 1_000_000));
+export const TOPUP_AMOUNT_USDC6     = BigInt(Math.round(cfg.TOPUP_AMOUNT_USDC    * 1_000_000));
+export const TOPUP_DAILY_CAP_USDC6  = BigInt(Math.round(cfg.TOPUP_DAILY_CAP_USDC * 1_000_000));
+export const WITHDRAW_MIN_USDC6     = BigInt(Math.round(cfg.WITHDRAW_MIN_USDC     * 1_000_000));
+export const WITHDRAW_DAILY_CAP_USDC6 = BigInt(Math.round(cfg.WITHDRAW_DAILY_CAP_USDC * 1_000_000));
+// The gas reserve held back from withdrawable balance — same as the top-up amount.
+export const WITHDRAW_GAS_RESERVE_USDC6 = TOPUP_AMOUNT_USDC6;
