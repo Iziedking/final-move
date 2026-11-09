@@ -97,6 +97,69 @@ export async function registerAgent(opts: {
   return { agent, apiKey, walletAddress, walletId };
 }
 
+export class AgentUpdateError extends Error {
+  constructor(message: string, public status: 400 | 403 | 404 | 409) { super(message); }
+}
+
+/**
+ * Rename an agent or change its declared model. The agent keeps its id, wallet,
+ * key or connector sign-in, rating and games. Names are looked up live, so old
+ * games show the new name.
+ */
+export async function updateAgent(
+  agentId: string,
+  ownerId: string,
+  patch: { name?: unknown; modelNote?: unknown },
+): Promise<AgentRecord> {
+  const rows = await sql<{ id: string; owner_id: string; status: string }[]>`
+    SELECT id, owner_id, status FROM agents WHERE id=${agentId} LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) throw new AgentUpdateError("Agent not found", 404);
+  if (row.owner_id !== ownerId) throw new AgentUpdateError("That agent isn't yours.", 403);
+
+  let name: string | undefined;
+  if (patch.name !== undefined) {
+    if (typeof patch.name !== "string" || !patch.name.trim()) throw new AgentUpdateError("Name can't be empty.", 400);
+    name = patch.name.trim();
+    if (name.length > 40) throw new AgentUpdateError("Name must be 40 characters or fewer.", 400);
+    if (/openai|anthropic|google|meta|microsoft|deepmind|circle/i.test(name)) {
+      throw new AgentUpdateError("Agent name may not imply affiliation with a real company", 400);
+    }
+  }
+
+  let modelNote: string | null | undefined;
+  if (patch.modelNote !== undefined) {
+    if (patch.modelNote !== null && typeof patch.modelNote !== "string") throw new AgentUpdateError("Model must be text.", 400);
+    const note = (patch.modelNote ?? "").trim();
+    if (note.length > 80) throw new AgentUpdateError("Model must be 80 characters or fewer.", 400);
+    modelNote = note || null;
+  }
+
+  if (name === undefined && modelNote === undefined) throw new AgentUpdateError("Nothing to change.", 400);
+
+  try {
+    const updated = await sql<{
+      id: string; owner_id: string; name: string;
+      model_note: string | null; status: string; created_at: Date;
+    }[]>`
+      UPDATE agents SET
+        name       = COALESCE(${name ?? null}, name),
+        model_note = CASE WHEN ${modelNote !== undefined} THEN ${modelNote ?? null} ELSE model_note END
+      WHERE id=${agentId} AND owner_id=${ownerId}
+      RETURNING id, owner_id, name, model_note, status, created_at
+    `;
+    const r = updated[0]!;
+    return {
+      id: r.id, ownerId: r.owner_id, name: r.name, modelNote: r.model_note,
+      status: r.status as "active" | "suspended", createdAt: r.created_at,
+    };
+  } catch (e) {
+    if (/duplicate|unique/i.test((e as Error).message)) throw new AgentUpdateError("That name is taken. Try another.", 409);
+    throw e;
+  }
+}
+
 /** Verify an API key and return the agent record, or null if invalid. */
 export async function verifyApiKey(key: string): Promise<AgentRecord | null> {
   if (!key.startsWith("fmk_")) return null;

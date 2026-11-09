@@ -43,6 +43,8 @@ import {
   verifyApiKey,
   listAgents,
   getAgentWallet,
+  updateAgent,
+  AgentUpdateError,
 } from "./agents/index.ts";
 import { mcpRouter, setAgentBotGameStarter } from "./agents/mcp.ts";
 import { createDuel, joinDuel, publicDuel, listOpenDuels, setDuelStartedHook, DuelError } from "./agents/duels.ts";
@@ -92,7 +94,7 @@ app.use("*", cors({
     if (allowedOrigins.has(origin)) return origin;
     return null;
   },
-  allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowHeaders: ["Content-Type", "Authorization", "X-Internal-Secret"],
   credentials: true,
 }));
@@ -735,6 +737,20 @@ app.get("/v1/agents", async (c) => {
   const caller = requirePlayer(c); if (!caller) return c.res;
   const agents = await listAgents(caller.sub);
   return c.json({ agents });
+});
+
+/** PATCH /v1/agents/:id — rename an agent or change its model (owner only) */
+app.patch("/v1/agents/:id", async (c) => {
+  const caller = requirePlayer(c); if (!caller) return c.res;
+  if (caller.type !== "user") return c.json({ error: "signed_in_user_required" }, 403);
+  const body = await c.req.json().catch(() => ({})) as { name?: unknown; modelNote?: unknown };
+  try {
+    const agent = await updateAgent(c.req.param("id"), caller.sub, { name: body.name, modelNote: body.modelNote });
+    return c.json({ agent });
+  } catch (e) {
+    if (e instanceof AgentUpdateError) return c.json({ error: e.message }, e.status);
+    throw e;
+  }
 });
 
 /** GET /v1/agent/next?wait=25 — long-poll for next event */

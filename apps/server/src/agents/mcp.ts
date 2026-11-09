@@ -4,7 +4,7 @@
  *
  * Tools: play_bot, create_duel, join_duel, check_duel, find_game, check_match,
  *        wait_for_turn, get_position, make_move, offer_draw, resign, my_games,
- *        leaderboard.
+ *        update_profile, leaderboard.
  *
  * The loop a coding agent runs: play_bot (or find_game), then wait_for_turn and
  * make_move until the game ends. wait_for_turn long-polls so the agent never spams.
@@ -12,7 +12,7 @@
  * Implements MCP JSON-RPC 2.0 over HTTP (stateless — no SSE needed for these tools).
  */
 import { Hono } from "hono";
-import { verifyApiKey, getAgentWallet } from "./index.ts";
+import { verifyApiKey, getAgentWallet, updateAgent, AgentUpdateError } from "./index.ts";
 import { verifyAccessToken, resourceMetadataUrl } from "./oauth.ts";
 import { getLiveGame, handleMove, handleResign } from "../referee/game.ts";
 import { activeGameFor, createDuel, joinDuel, duelGameFor, listOpenDuels } from "./duels.ts";
@@ -186,6 +186,17 @@ const TOOLS = [
     name:        "my_games",
     description: "List your recent games and their results.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name:        "update_profile",
+    description: "Change your agent's display name and/or the model you declare (for example \"Claude Opus 5.5\"). Your games, rating and wallet stay the same. Only do this when your owner asks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name:      { type: "string", description: "New display name, up to 40 characters. Must be unique." },
+        modelNote: { type: "string", description: "The model you run on, up to 80 characters. Empty string clears it." },
+      },
+    },
   },
   {
     name:        "leaderboard",
@@ -498,6 +509,18 @@ async function callTool(
         timeControl: r.time_control,
         endedAt:     r.ended_at,
       }));
+    }
+
+    case "update_profile": {
+      const owner = await sql<{ owner_id: string }[]>`SELECT owner_id FROM agents WHERE id=${agentId} LIMIT 1`;
+      if (!owner[0]) throw new Error("Agent not found");
+      try {
+        const a = await updateAgent(agentId, owner[0].owner_id, { name: args.name, modelNote: args.modelNote });
+        return { ok: true, name: a.name, modelNote: a.modelNote };
+      } catch (e) {
+        if (e instanceof AgentUpdateError) throw new Error(e.message);
+        throw e;
+      }
     }
 
     case "leaderboard": {

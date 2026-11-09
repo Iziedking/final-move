@@ -14,9 +14,81 @@ import { signIn } from "next-auth/react";
 import { BotAvatar } from "@/components/BotAvatar";
 import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
 
-interface AgentRecord { id: string; name: string; status: string; createdAt: string; }
+interface AgentRecord { id: string; name: string; modelNote?: string | null; status: string; createdAt: string; }
 
 const MAX_AGENTS = 5;
+
+/** One of your agents. Edit renames it or changes its model; games, rating and wallet stay. */
+function AgentRow({ agent, userId, onSaved }: { agent: AgentRecord; userId: string; onSaved: (a: AgentRecord) => void }): React.JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [name, setName]       = useState(agent.name);
+  const [note, setNote]       = useState(agent.modelNote ?? "");
+  const [saving, setSaving]   = useState(false);
+  const [error, setError]     = useState<string | null>(null);
+
+  const open = () => { setName(agent.name); setNote(agent.modelNote ?? ""); setError(null); setEditing(true); };
+
+  const save = async () => {
+    const patch: { name?: string; modelNote?: string } = {};
+    if (name.trim() !== agent.name) patch.name = name.trim();
+    if (note.trim() !== (agent.modelNote ?? "")) patch.modelNote = note.trim();
+    if (!patch.name && patch.modelNote === undefined) { setEditing(false); return; }
+    setSaving(true); setError(null);
+    try {
+      const res = await apiFetch(`/v1/agents/${encodeURIComponent(agent.id)}`, { method: "PATCH", body: JSON.stringify(patch) }, userId);
+      const data = await res.json() as { agent?: AgentRecord; error?: string };
+      if (!res.ok || !data.agent) throw new Error(data.error && !data.error.includes("_") ? data.error : describeError(data.error));
+      onSaved({ ...agent, name: data.agent.name, modelNote: data.agent.modelNote });
+      setEditing(false);
+    } catch (e) { setError((e as Error).message); }
+    finally { setSaving(false); }
+  };
+
+  const fieldClass = "min-h-[44px] w-full rounded-[var(--r)] px-3 text-[15px] font-semibold outline-none";
+  const fieldStyle: React.CSSProperties = { border: "2px solid rgb(var(--ink))", background: "rgb(var(--cloud))", color: "rgb(var(--ink))" };
+
+  return (
+    <li className="flex flex-col gap-2 rounded-xl px-3 py-2" style={{ background: "rgb(var(--cloud-2))" }}>
+      <div className="flex min-h-[52px] items-center gap-3">
+        <BotAvatar botId={agent.id} className="h-9 w-9 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <Link href={`/profile/${agent.id}`} className="block truncate font-display text-[17px] font-extrabold hover:underline" style={{ color: "rgb(var(--ink))" }}>{agent.name}</Link>
+          <span className="block truncate text-[12px] font-semibold" style={{ color: "rgb(var(--ink-3))" }}>
+            {agent.modelNote ? `${agent.modelNote} · ` : ""}<span className="font-mono font-medium">{agent.id}</span>
+          </span>
+        </div>
+        <span className="chip py-0 text-[11px]" style={{ background: agent.status === "active" ? "rgb(var(--mint))" : "rgb(var(--cloud))" }}>
+          {agent.status.charAt(0).toUpperCase() + agent.status.slice(1)}
+        </span>
+        {!editing && (
+          <button type="button" onClick={open} className="min-h-[40px] px-2 text-[14px] font-extrabold underline decoration-2 underline-offset-2" style={{ color: "rgb(var(--violet))" }} aria-label={`Edit ${agent.name}`}>
+            Edit
+          </button>
+        )}
+      </div>
+      {editing && (
+        <form className="flex flex-col gap-3 pb-2" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+          <div>
+            <label htmlFor={`name-${agent.id}`} className="mb-1 block text-[13px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>Name</label>
+            <input id={`name-${agent.id}`} value={name} onChange={(e) => setName(e.target.value)} maxLength={40} className={fieldClass} style={fieldStyle} />
+          </div>
+          <div>
+            <label htmlFor={`note-${agent.id}`} className="mb-1 block text-[13px] font-extrabold" style={{ color: "rgb(var(--ink))" }}>
+              Model <span className="font-semibold" style={{ color: "rgb(var(--ink-3))" }}>(optional)</span>
+            </label>
+            <input id={`note-${agent.id}`} value={note} onChange={(e) => setNote(e.target.value)} maxLength={80} placeholder="e.g. Claude Opus 5.5" className={fieldClass} style={fieldStyle} />
+          </div>
+          <p className="text-[12px] font-semibold" style={{ color: "rgb(var(--ink-3))" }}>Its games, rating and wallet stay the same. Past games show the new name.</p>
+          {error && <p className="text-[14px] font-bold" style={{ color: "rgb(var(--coral))" }} role="alert">{error}</p>}
+          <div className="flex flex-wrap gap-2">
+            <button type="submit" disabled={saving || !name.trim()} className="pop-btn min-h-[44px] px-5 text-[15px]">{saving ? "Saving…" : "Save"}</button>
+            <button type="button" onClick={() => setEditing(false)} className="pop-btn pop-btn-ghost min-h-[44px] px-5 text-[15px]">Cancel</button>
+          </div>
+        </form>
+      )}
+    </li>
+  );
+}
 
 function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
   const [done, setDone] = useState(false);
@@ -82,7 +154,7 @@ export function AgentsClient({ session }: { session: Session | null }): React.JS
       const data = await res.json() as { agentId?: string; apiKey?: string; error?: string };
       if (!res.ok) throw new Error(data.error && !data.error.includes("_") ? data.error : describeError(data.error));
       setNewKey(data.apiKey ?? null);
-      setAgents((prev) => [...prev, { id: data.agentId!, name: name.trim(), status: "active", createdAt: new Date().toISOString() }]);
+      setAgents((prev) => [...prev, { id: data.agentId!, name: name.trim(), modelNote: modelNote.trim() || null, status: "active", createdAt: new Date().toISOString() }]);
       setName(""); setModelNote("");
     } catch (e) { setError((e as Error).message); }
     finally { setLoading(false); }
@@ -180,16 +252,12 @@ export function AgentsClient({ session }: { session: Session | null }): React.JS
                 ) : (
                   <ul className="flex flex-col gap-1.5">
                     {agents.map((a) => (
-                      <li key={a.id} className="flex min-h-[52px] items-center gap-3 rounded-xl px-3 py-2" style={{ background: "rgb(var(--cloud-2))" }}>
-                        <BotAvatar botId={a.id} className="h-9 w-9 shrink-0" />
-                        <div className="min-w-0 flex-1">
-                          <Link href={`/profile/${a.id}`} className="block truncate font-display text-[17px] font-extrabold hover:underline" style={{ color: "rgb(var(--ink))" }}>{a.name}</Link>
-                          <span className="font-mono text-[12px] font-medium" style={{ color: "rgb(var(--ink-3))" }}>{a.id}</span>
-                        </div>
-                        <span className="chip py-0 text-[11px]" style={{ background: a.status === "active" ? "rgb(var(--mint))" : "rgb(var(--cloud))" }}>
-                          {a.status.charAt(0).toUpperCase() + a.status.slice(1)}
-                        </span>
-                      </li>
+                      <AgentRow
+                        key={a.id}
+                        agent={a}
+                        userId={userId!}
+                        onSaved={(u) => setAgents((prev) => prev.map((x) => (x.id === u.id ? u : x)))}
+                      />
                     ))}
                   </ul>
                 )}
